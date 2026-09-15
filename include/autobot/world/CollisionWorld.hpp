@@ -15,6 +15,7 @@ public:
     [[nodiscard]] bool ready() const { return m_ready; }
     [[nodiscard]] std::vector<CollisionPrimitive> const& primitives() const { return m_primitives; }
     [[nodiscard]] std::vector<ClassificationAuditEntry> const& classificationAudit() const { return m_audit; }
+    [[nodiscard]] std::vector<RawClassificationAuditEntry> const& rawClassificationAudit() const { return m_rawAudit; }
     [[nodiscard]] CollisionWorldMetrics const& metrics() const { return m_metrics; }
 
     [[nodiscard]] CollisionQueryResult queryRegion(WorldRect const& region) const;
@@ -25,6 +26,10 @@ public:
         float height = 360.0f
     ) const;
 
+    [[nodiscard]] std::size_t primitiveForSource(std::size_t sourceIndex) const;
+    [[nodiscard]] bool primitiveIndexed(std::size_t primitiveIndex) const;
+    [[nodiscard]] std::vector<SpatialCell> const& cellsForPrimitive(std::size_t primitiveIndex) const;
+
 private:
     static CollisionPrimitive makePrimitive(WorldObject const& object, std::size_t sourceIndex);
     static QueryBenchmark benchmarkQueries(
@@ -32,11 +37,14 @@ private:
         std::vector<CollisionPrimitive> const& primitives
     );
     static std::vector<ClassificationAuditEntry> buildClassificationAudit(StaticWorld const& source);
+    static std::vector<RawClassificationAuditEntry> buildRawClassificationAudit(StaticWorld const& source);
 
     bool m_ready = false;
     std::vector<CollisionPrimitive> m_primitives;
     SpatialHash m_spatialHash{120.0f};
+    std::vector<std::size_t> m_sourceToPrimitive;
     std::vector<ClassificationAuditEntry> m_audit;
+    std::vector<RawClassificationAuditEntry> m_rawAudit;
     CollisionWorldMetrics m_metrics{};
 };
 
