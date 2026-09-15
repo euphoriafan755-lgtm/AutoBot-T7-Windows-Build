@@ -90,6 +90,7 @@ struct CollisionPoint {
 
 struct CollisionPrimitive {
     std::size_t sourceIndex = 0;
+    std::size_t playLayerObjectIndex = 0;
     int sourceUniqueID = 0;
     int objectID = 0;
     int rawGameObjectType = -1;
@@ -127,7 +128,19 @@ struct CollisionPrimitive {
     bool groupDisabled = false;
     bool enabled = true;
     bool slope = false;
+    int groupCount = 0;
+    bool potentiallyDynamic = false;
+    bool observedDynamic = false;
     bool indexable = false;
+};
+
+struct DynamicSyncStats {
+    std::size_t watched = 0;
+    std::size_t changed = 0;
+    std::size_t reindexed = 0;
+    std::size_t readFailures = 0;
+    std::size_t identityMismatches = 0;
+    double syncMs = 0.0;
 };
 
 struct SpatialCell {
