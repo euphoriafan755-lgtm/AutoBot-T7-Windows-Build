@@ -23,12 +23,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force ci-logs | Out-Null
           New-Item -ItemType Directory -Force ci-artifacts | Out-Null
-
           "NOT_RUN" | Set-Content ci-logs/configure-exit-code.txt
           "NOT_RUN" | Set-Content ci-logs/build-exit-code.txt
+          "NOT_RUN" | Set-Content ci-logs/static-tests-result.txt
           "Configure has not run yet." | Set-Content ci-logs/configure.log
           "Build has not run yet." | Set-Content ci-logs/build.log
-
           "OS=$([System.Environment]::OSVersion.VersionString)" | Tee-Object -FilePath ci-logs/toolchain.txt
           "RUNNER_OS=$env:RUNNER_OS" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           "RUNNER_ARCH=$env:RUNNER_ARCH" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
@@ -86,16 +85,13 @@ jobs:
           mkdir -p "$CLI_PROFILE/geode/mods"
           mkdir -p "$CLI_PROFILE/Contents/geode/mods"
           geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win
-
           geode sdk install "${{ github.workspace }}/geode-sdk-clone"
           export GEODE_SDK="${{ github.workspace }}/geode-sdk-clone"
           echo "GEODE_SDK=$GEODE_SDK" >> "$GITHUB_ENV"
-
           TARGET_GEODE_VERSION=$(jq -r '.geode' mod.json)
           echo "Updating SDK to version $TARGET_GEODE_VERSION"
           geode sdk update "$TARGET_GEODE_VERSION"
           geode sdk install-binaries --platform win --version "$TARGET_GEODE_VERSION"
-
           export CPM_CACHE="${{ github.workspace }}/cpm-cache"
           echo "CPM_SOURCE_CACHE=$CPM_CACHE" >> "$GITHUB_ENV"
 
@@ -115,6 +111,30 @@ jobs:
             echo "CPM_SOURCE_CACHE=${CPM_SOURCE_CACHE:-UNSET}"
           } 2>&1 | tee -a ci-logs/toolchain.txt
 
+      - name: Run static invariants before build
+        id: static_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-tests ci-logs
+          : > ci-logs/static-tests.log
+          echo "NOT_RUN" > ci-logs/static-tests-result.txt
+          run_test() {
+            local name="$1"
+            shift
+            echo "=== $name ===" | tee -a ci-logs/static-tests.log
+            "$@" 2>&1 | tee -a ci-logs/static-tests.log
+          }
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/SpatialHashInvariantTest.cpp src/world/SpatialHash.cpp -o ci-tests/spatial.exe
+          run_test SPATIAL_HASH ./ci-tests/spatial.exe
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/CollisionWorldInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/CollisionQueryAudit.cpp -o ci-tests/collision.exe
+          run_test FULL_SCAN_VS_HASH ./ci-tests/collision.exe
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/DynamicColliderSyncInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp -o ci-tests/dynamic.exe
+          run_test DYNAMIC_COLLIDER_SYNC ./ci-tests/dynamic.exe
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/InputControllerStateMachineTest.cpp -o ci-tests/input.exe
+          run_test INPUT_CONTROLLER_STATE_MACHINE ./ci-tests/input.exe
+          echo "PASS" > ci-logs/static-tests-result.txt
+
       - name: Configure and build with full diagnostics
         id: captured_build
         if: always()
@@ -122,36 +142,21 @@ jobs:
         run: |
           set +e
           mkdir -p "$HOME/.cache" ci-logs ci-artifacts
-
           SCCACHE_PATH="$(which sccache 2>/dev/null)"
           CMAKE_EXTRA_ARGS=()
           if [ -n "$SCCACHE_PATH" ]; then
             CMAKE_EXTRA_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=$SCCACHE_PATH")
             CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_PATH")
           fi
-
           echo "=== REAL GEODE CONFIGURE ===" | tee ci-logs/configure.log
           echo "Target: Win64" | tee -a ci-logs/configure.log
           echo "Configuration: Release" | tee -a ci-logs/configure.log
           echo "Warnings: -Wall -Wextra" | tee -a ci-logs/configure.log
           echo "GEODE_SDK=${GEODE_SDK:-UNSET}" | tee -a ci-logs/configure.log
-
-          cmake \
-            -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            '-DGEODE_CODEGEN_CMAKE_ARGS=-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja' \
-            -G Ninja \
-            "${CMAKE_EXTRA_ARGS[@]}" \
-            -DGEODE_DONT_INSTALL_MODS=ON \
-            -DGEODE_TARGET_PLATFORM=Win64 \
-            '-DCMAKE_CXX_FLAGS=-Wall -Wextra' \
-            2>&1 | tee -a ci-logs/configure.log
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '-DGEODE_CODEGEN_CMAKE_ARGS=-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja' -G Ninja "${CMAKE_EXTRA_ARGS[@]}" -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Win64 '-DCMAKE_CXX_FLAGS=-Wall -Wextra' 2>&1 | tee -a ci-logs/configure.log
           CONFIGURE_CODE=${PIPESTATUS[0]}
           echo "$CONFIGURE_CODE" > ci-logs/configure-exit-code.txt
           echo "CONFIGURE_EXIT_CODE=$CONFIGURE_CODE" | tee -a ci-logs/configure.log
-
           BUILD_CODE=NOT_RUN
           if [ "$CONFIGURE_CODE" -eq 0 ]; then
             echo "=== REAL GEODE BUILD ===" | tee ci-logs/build.log
@@ -163,7 +168,6 @@ jobs:
             echo "Build skipped because configure failed with exit code $CONFIGURE_CODE." | tee ci-logs/build.log
             echo "NOT_RUN" > ci-logs/build-exit-code.txt
           fi
-
           if [ -d build ]; then
             find build -type f -print 2>&1 | sort > ci-logs/build-files.txt
             mkdir -p ci-logs/cmake
@@ -175,12 +179,8 @@ jobs:
           else
             echo "build directory not created" > ci-logs/build-files.txt
           fi
-
           mapfile -t GEODE_FILES < <(find build -type f -name '*.geode' -print 2>/dev/null)
-          if [ "${#GEODE_FILES[@]}" -gt 0 ]; then
-            cp "${GEODE_FILES[0]}" ci-artifacts/AutoBot-T7-v0.1.geode
-          fi
-
+          if [ "${#GEODE_FILES[@]}" -gt 0 ]; then cp "${GEODE_FILES[0]}" ci-artifacts/AutoBot-T7-v0.1.geode; fi
           exit 0
 
       - name: Prepare reproducible artifact
@@ -190,58 +190,31 @@ jobs:
           set +e
           mkdir -p ci-artifacts/ci-logs
           cp -R ci-logs/. ci-artifacts/ci-logs/
-
           BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
           SOURCE_ARCHIVE_COMMIT="$GITHUB_SHA"
           CHECKOUT_MATCH=FAIL
           SOURCE_BINARY_MATCH=FAIL
-
-          if [ "$BUILD_COMMIT" = "$GITHUB_SHA" ]; then
-            CHECKOUT_MATCH=PASS
-          fi
-
+          if [ "$BUILD_COMMIT" = "$GITHUB_SHA" ]; then CHECKOUT_MATCH=PASS; fi
           git archive --format=zip --output=ci-artifacts/AutoBot-T7-v0.1-source.zip "$GITHUB_SHA"
           ARCHIVE_CODE=$?
-
           CONFIGURE_CODE="$(tr -d '\r\n ' < ci-logs/configure-exit-code.txt 2>/dev/null)"
           BUILD_CODE="$(tr -d '\r\n ' < ci-logs/build-exit-code.txt 2>/dev/null)"
-
+          STATIC_TEST_RESULT="$(tr -d '\r\n ' < ci-logs/static-tests-result.txt 2>/dev/null)"
           GEODE_FILE="ci-artifacts/AutoBot-T7-v0.1.geode"
           SOURCE_FILE="ci-artifacts/AutoBot-T7-v0.1-source.zip"
-          GEODE_EXISTS=FAIL
-          SOURCE_EXISTS=FAIL
-          PACKAGE_LOG_RESULT=FAIL
-          LINK_RESULT=FAIL
-
+          GEODE_EXISTS=FAIL; SOURCE_EXISTS=FAIL; PACKAGE_LOG_RESULT=FAIL; LINK_RESULT=FAIL
           if [ -s "$GEODE_FILE" ]; then GEODE_EXISTS=PASS; fi
           if [ -s "$SOURCE_FILE" ] && [ "$ARCHIVE_CODE" -eq 0 ]; then SOURCE_EXISTS=PASS; fi
           if grep -Fq "Successfully packaged thiago7tv.autobot-t7.geode" ci-logs/build.log 2>/dev/null; then PACKAGE_LOG_RESULT=PASS; fi
           if find build -type f -name 'thiago7tv.autobot-t7.dll' -size +0c -print -quit 2>/dev/null | grep -q .; then LINK_RESULT=PASS; fi
-
-          CONFIGURE_RESULT=FAIL
-          COMPILE_RESULT=FAIL
-          PACKAGE_RESULT=FAIL
+          CONFIGURE_RESULT=FAIL; COMPILE_RESULT=FAIL; PACKAGE_RESULT=FAIL
           if [ "$CONFIGURE_CODE" = "0" ]; then CONFIGURE_RESULT=PASS; fi
           if [ "$BUILD_CODE" = "0" ]; then COMPILE_RESULT=PASS; fi
           if [ "$BUILD_CODE" = "0" ] && [ "$GEODE_EXISTS" = "PASS" ] && [ "$PACKAGE_LOG_RESULT" = "PASS" ]; then PACKAGE_RESULT=PASS; fi
-
-          if [ "$CHECKOUT_MATCH" = "PASS" ] && [ "$SOURCE_ARCHIVE_COMMIT" = "$BUILD_COMMIT" ] && [ "$SOURCE_EXISTS" = "PASS" ]; then
-            SOURCE_BINARY_MATCH=PASS
-          fi
-
-          GEODE_SIZE=0
-          SOURCE_SIZE=0
-          GEODE_SHA=NOT_AVAILABLE
-          SOURCE_SHA=NOT_AVAILABLE
-          if [ -s "$GEODE_FILE" ]; then
-            GEODE_SIZE="$(wc -c < "$GEODE_FILE" | tr -d ' ')"
-            GEODE_SHA="$(sha256sum "$GEODE_FILE" | awk '{print $1}')"
-          fi
-          if [ -s "$SOURCE_FILE" ]; then
-            SOURCE_SIZE="$(wc -c < "$SOURCE_FILE" | tr -d ' ')"
-            SOURCE_SHA="$(sha256sum "$SOURCE_FILE" | awk '{print $1}')"
-          fi
-
+          if [ "$CHECKOUT_MATCH" = "PASS" ] && [ "$SOURCE_ARCHIVE_COMMIT" = "$BUILD_COMMIT" ] && [ "$SOURCE_EXISTS" = "PASS" ]; then SOURCE_BINARY_MATCH=PASS; fi
+          GEODE_SIZE=0; SOURCE_SIZE=0; GEODE_SHA=NOT_AVAILABLE; SOURCE_SHA=NOT_AVAILABLE
+          if [ -s "$GEODE_FILE" ]; then GEODE_SIZE="$(wc -c < "$GEODE_FILE" | tr -d ' ')"; GEODE_SHA="$(sha256sum "$GEODE_FILE" | awk '{print $1}')"; fi
+          if [ -s "$SOURCE_FILE" ]; then SOURCE_SIZE="$(wc -c < "$SOURCE_FILE" | tr -d ' ')"; SOURCE_SHA="$(sha256sum "$SOURCE_FILE" | awk '{print $1}')"; fi
           OS_LINE="$(grep '^OS=' ci-logs/toolchain.txt | head -n1 | cut -d= -f2-)"
           ARCH_LINE="$(grep '^RUNNER_ARCH=' ci-logs/toolchain.txt | head -n1 | cut -d= -f2-)"
           COMPILER_LINE="$(clang++ --version 2>/dev/null | head -n1)"
@@ -249,10 +222,9 @@ jobs:
           GEODE_CLI_LINE="$(geode --version 2>/dev/null | head -n1)"
           GEODE_SDK_VERSION="$(jq -r '.geode' mod.json 2>/dev/null)"
           GD_TARGET_VERSION="$(jq -r '.gd.win' mod.json 2>/dev/null)"
-
           cat > ci-artifacts/BUILD-REPORT.txt <<EOF
           AUTOBOT T7 V0.1
-          COLLISION WORLD FIX BUILD
+          COLLISION WORLD FIX + AUTONOMOUS TEST DRIVER BUILD
 
           GITHUB SHA: $GITHUB_SHA
           RUN ID: $GITHUB_RUN_ID
@@ -271,6 +243,7 @@ jobs:
 
           CONFIGURE EXIT CODE: $CONFIGURE_CODE
           BUILD EXIT CODE: $BUILD_CODE
+          STATIC INVARIANTS RESULT: $STATIC_TEST_RESULT
           CONFIGURE RESULT: $CONFIGURE_RESULT
           COMPILE RESULT: $COMPILE_RESULT
           LINK RESULT: $LINK_RESULT
@@ -280,31 +253,22 @@ jobs:
           GEODE FILENAME: AutoBot-T7-v0.1.geode
           GEODE SIZE: $GEODE_SIZE bytes
           GEODE SHA256: $GEODE_SHA
-
           SOURCE ARCHIVE FILENAME: AutoBot-T7-v0.1-source.zip
           SOURCE ARCHIVE SIZE: $SOURCE_SIZE bytes
           SOURCE ZIP SHA256: $SOURCE_SHA
-
           CHECKOUT COMMIT MATCH = $CHECKOUT_MATCH
           SOURCE / BINARY COMMIT MATCH = $SOURCE_BINARY_MATCH
 
-          BUG 1 — FALSE HAZARDS: FIX COMPILED; RUNTIME VERIFICATION PENDING
-          BUG 2 — MISSING COLLIDERS: DIAGNOSTICS/FIX COMPILED; RUNTIME VERIFICATION PENDING
-          BUG 3 — WRONG/SHIFTED COLLIDERS: FIX COMPILED; RUNTIME VERIFICATION PENDING
-          BUG 4 — QUERY DROPPING: NO ROOT CAUSE CONFIRMED; INVARIANTS COMPILED; RUNTIME VERIFICATION PENDING
-          OBJECT COUNT DIFFERENCE 115754 VS 115784: UNDER INVESTIGATION
+          LIFECYCLE SOURCE FIX = COMPILED IF BUILD PASS; RUNTIME PENDING
+          DYNAMIC COLLIDER SYNC = COMPILED IF BUILD PASS; RUNTIME PENDING
+          FULL WORLD DEBUG = COMPILED IF BUILD PASS; RUNTIME PENDING
+          MODE TRANSITION TRACE = COMPILED IF BUILD PASS; RUNTIME PENDING
+          INPUT CONTROLLER = COMPILED IF BUILD PASS; RUNTIME PENDING
+          AUTONOMOUS TEST DRIVER = COMPILED IF BUILD PASS; RUNTIME PENDING
           EXACT GAMEPLAY HITBOX ACCURACY: NOT VERIFIED
           COLLISION WORLD GATE: FAILED / NOT PASSED YET
           EOF
-
-          (
-            cd ci-artifacts
-            : > SHA256SUMS.txt
-            [ -s AutoBot-T7-v0.1.geode ] && sha256sum AutoBot-T7-v0.1.geode >> SHA256SUMS.txt
-            [ -s AutoBot-T7-v0.1-source.zip ] && sha256sum AutoBot-T7-v0.1-source.zip >> SHA256SUMS.txt
-            [ -s BUILD-REPORT.txt ] && sha256sum BUILD-REPORT.txt >> SHA256SUMS.txt
-          )
-
+          ( cd ci-artifacts; : > SHA256SUMS.txt; [ -s AutoBot-T7-v0.1.geode ] && sha256sum AutoBot-T7-v0.1.geode >> SHA256SUMS.txt; [ -s AutoBot-T7-v0.1-source.zip ] && sha256sum AutoBot-T7-v0.1-source.zip >> SHA256SUMS.txt; [ -s BUILD-REPORT.txt ] && sha256sum BUILD-REPORT.txt >> SHA256SUMS.txt )
           echo "ARCHIVE_EXIT_CODE=$ARCHIVE_CODE" > ci-logs/archive-exit-code.txt
           echo "CHECKOUT_COMMIT_MATCH=$CHECKOUT_MATCH" > ci-logs/checkout-commit-match.txt
           echo "SOURCE_BINARY_COMMIT_MATCH=$SOURCE_BINARY_MATCH" > ci-logs/source-binary-commit-match.txt
@@ -313,7 +277,6 @@ jobs:
           cp ci-logs/checkout-commit-match.txt ci-artifacts/ci-logs/
           cp ci-logs/source-binary-commit-match.txt ci-artifacts/ci-logs/
           cp ci-logs/package-log-confirmation.txt ci-artifacts/ci-logs/
-
           exit 0
 
       - name: Upload reproducible build artifact
@@ -330,18 +293,19 @@ jobs:
         run: |
           $configureCode = (Get-Content ci-logs/configure-exit-code.txt -Raw).Trim()
           $buildCode = (Get-Content ci-logs/build-exit-code.txt -Raw).Trim()
+          $staticTests = (Get-Content ci-logs/static-tests-result.txt -Raw).Trim()
           $archiveCode = (Get-Content ci-logs/archive-exit-code.txt -Raw).Trim().Split('=')[-1]
           $checkoutMatch = (Get-Content ci-logs/checkout-commit-match.txt -Raw).Trim().Split('=')[-1]
           $sourceBinaryMatch = (Get-Content ci-logs/source-binary-commit-match.txt -Raw).Trim().Split('=')[-1]
           $packageLog = (Get-Content ci-logs/package-log-confirmation.txt -Raw).Trim().Split('=')[-1]
-
           Write-Host "CONFIGURE_EXIT_CODE=$configureCode"
           Write-Host "BUILD_EXIT_CODE=$buildCode"
+          Write-Host "STATIC_INVARIANTS=$staticTests"
           Write-Host "ARCHIVE_EXIT_CODE=$archiveCode"
           Write-Host "CHECKOUT_COMMIT_MATCH=$checkoutMatch"
           Write-Host "SOURCE_BINARY_COMMIT_MATCH=$sourceBinaryMatch"
           Write-Host "PACKAGE_LOG_CONFIRMATION=$packageLog"
-
+          if ($staticTests -ne "PASS") { Write-Error "STATIC INVARIANTS = FAIL"; exit 1 }
           if ($configureCode -ne "0") { Write-Error "REAL GEODE CONFIGURE = FAIL"; exit 1 }
           if ($buildCode -ne "0") { Write-Error "REAL GEODE COMPILE/LINK/PACKAGE = FAIL"; exit 1 }
           if ($archiveCode -ne "0") { Write-Error "SOURCE ARCHIVE = FAIL"; exit 1 }
@@ -352,7 +316,6 @@ jobs:
           if ((Get-Item ci-artifacts/AutoBot-T7-v0.1.geode).Length -le 0) { Write-Error ".geode empty"; exit 1 }
           if (-not (Test-Path ci-artifacts/AutoBot-T7-v0.1-source.zip)) { Write-Error "source.zip missing"; exit 1 }
           if ((Get-Item ci-artifacts/AutoBot-T7-v0.1-source.zip).Length -le 0) { Write-Error "source.zip empty"; exit 1 }
-
           Write-Host "REAL GEODE CONFIGURE = PASS"
           Write-Host "REAL C++ COMPILE = PASS"
           Write-Host "REAL LINK = PASS"
