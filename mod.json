@@ -7,13 +7,25 @@
   "name": "AutoBot T7",
   "version": "0.1.0",
   "developer": "Thiago7TV",
-  "description": "AutoBot T7 V0.1 Zero-Shot Core: runtime-verified state reading plus Collision World diagnostics.",
+  "description": "AutoBot T7 V0.1 Zero-Shot Core: runtime-verified state reading plus Collision World audit diagnostics.",
   "settings": {
     "collision-debug-overlay": {
       "type": "bool",
       "name": "Collision Debug Overlay",
-      "description": "Temporary Collision World diagnostics. Draws nearby broad-phase collision candidates and query metrics. Gameplay hitboxes remain NOT VERIFIED until runtime validation.",
+      "description": "Shows Collision World object bounds and query metrics. Exact gameplay hitboxes remain NOT VERIFIED.",
       "default": true
+    },
+    "collision-trace-debug": {
+      "type": "bool",
+      "name": "Collision Trace Debug",
+      "description": "Expensive diagnostic mode. Traces nearby objects from StaticWorld through primitive creation, SpatialHash, query and renderer, and runs periodic invariants/parse stability checks.",
+      "default": false
+    },
+    "collision-object-labels": {
+      "type": "bool",
+      "name": "Collision Object Labels",
+      "description": "When Collision Trace Debug is enabled, labels nearby objects with source index, object ID, raw GameObjectType and final classification.",
+      "default": false
     }
   }
 }
