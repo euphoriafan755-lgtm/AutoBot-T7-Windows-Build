@@ -42,6 +42,8 @@ bool finiteRect(WorldRect const& rect) {
         && std::isfinite(rect.height);
 }
 
+std::vector<SpatialCell> const kEmptyCells{};
+
 } // namespace
 
 SpatialHash::SpatialHash(float cellSize)
@@ -49,9 +51,10 @@ SpatialHash::SpatialHash(float cellSize)
 
 void SpatialHash::clear() {
     m_cells.clear();
+    m_objectCells.clear();
 }
 
-std::size_t SpatialHash::CellKeyHash::operator()(CellKey const& key) const noexcept {
+std::size_t SpatialHash::CellKeyHash::operator()(SpatialCell const& key) const noexcept {
     const auto x = static_cast<std::uint32_t>(key.x);
     const auto y = static_cast<std::uint32_t>(key.y);
     const std::uint64_t combined = (static_cast<std::uint64_t>(x) << 32u) | y;
@@ -59,16 +62,19 @@ std::size_t SpatialHash::CellKeyHash::operator()(CellKey const& key) const noexc
 }
 
 int SpatialHash::cellCoordinate(float value) const {
+    // floor is required for negative world coordinates. Truncation would map
+    // -1..-119 into cell 0 and make queries asymmetric around the origin.
     return static_cast<int>(std::floor(value / m_cellSize));
 }
 
 void SpatialHash::build(std::vector<CollisionPrimitive> const& primitives) {
     clear();
+    m_objectCells.resize(primitives.size());
 
     for (std::size_t index = 0; index < primitives.size(); ++index) {
         auto const& primitive = primitives[index];
         auto const& bounds = primitive.broadphaseBounds;
-        if (!primitive.enabled || !finiteRect(bounds)) continue;
+        if (!primitive.enabled || !primitive.indexable || !finiteRect(bounds)) continue;
 
         const auto e = extents(bounds);
         const int minCellX = cellCoordinate(e.minX);
@@ -76,9 +82,16 @@ void SpatialHash::build(std::vector<CollisionPrimitive> const& primitives) {
         const int minCellY = cellCoordinate(e.minY);
         const int maxCellY = cellCoordinate(e.maxY);
 
+        auto& occupied = m_objectCells[index];
+        const auto width = static_cast<std::size_t>(maxCellX - minCellX + 1);
+        const auto height = static_cast<std::size_t>(maxCellY - minCellY + 1);
+        occupied.reserve(width * height);
+
         for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
             for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
-                m_cells[{cellX, cellY}].push_back(index);
+                SpatialCell cell{cellX, cellY};
+                m_cells[cell].push_back(index);
+                occupied.push_back(cell);
             }
         }
     }
@@ -88,6 +101,16 @@ std::vector<std::size_t> SpatialHash::queryRegion(
     WorldRect const& region,
     std::vector<CollisionPrimitive> const& primitives
 ) const {
+    SpatialQueryDebug ignored{};
+    return queryRegionDetailed(region, primitives, ignored);
+}
+
+std::vector<std::size_t> SpatialHash::queryRegionDetailed(
+    WorldRect const& region,
+    std::vector<CollisionPrimitive> const& primitives,
+    SpatialQueryDebug& debug
+) const {
+    debug = {};
     std::vector<std::size_t> result;
     if (!finiteRect(region) || m_cells.empty()) return result;
 
@@ -98,26 +121,46 @@ std::vector<std::size_t> SpatialHash::queryRegion(
     const int maxCellY = cellCoordinate(e.maxY);
 
     std::unordered_set<std::size_t> seen;
-    seen.reserve(64);
+    seen.reserve(128);
 
     for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
         for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
+            ++debug.cellsVisited;
             auto it = m_cells.find({cellX, cellY});
             if (it == m_cells.end()) continue;
 
+            debug.objectsInCells += it->second.size();
             for (auto index : it->second) {
-                if (index >= primitives.size()) continue;
-                if (!seen.insert(index).second) continue;
+                if (index >= primitives.size()) {
+                    ++debug.invalidIndices;
+                    continue;
+                }
+                if (!seen.insert(index).second) {
+                    ++debug.duplicatesSuppressed;
+                    continue;
+                }
+                ++debug.objectsAfterDedup;
 
                 auto const& primitive = primitives[index];
-                if (primitive.enabled && intersects(primitive.broadphaseBounds, region)) {
+                if (primitive.enabled && primitive.indexable
+                    && intersects(primitive.broadphaseBounds, region)) {
                     result.push_back(index);
+                    ++debug.objectsAfterIntersection;
                 }
             }
         }
     }
 
     return result;
+}
+
+bool SpatialHash::contains(std::size_t primitiveIndex) const {
+    return primitiveIndex < m_objectCells.size() && !m_objectCells[primitiveIndex].empty();
+}
+
+std::vector<SpatialCell> const& SpatialHash::cellsFor(std::size_t primitiveIndex) const {
+    if (primitiveIndex >= m_objectCells.size()) return kEmptyCells;
+    return m_objectCells[primitiveIndex];
 }
 
 } // namespace autobot::world
