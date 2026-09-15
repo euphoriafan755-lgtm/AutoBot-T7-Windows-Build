@@ -1,9 +1,11 @@
 #include "autobot/ui/CollisionDebugOverlay.hpp"
+#include "autobot/world/CollisionQueryAudit.hpp"
 
 #include <Geode/Geode.hpp>
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <unordered_set>
 
 using namespace geode::prelude;
@@ -17,6 +19,7 @@ ccColor4F slopeColor() { return {1.0f, 0.75f, 0.10f, 0.95f}; }
 ccColor4F unsupportedColor() { return {0.85f, 0.25f, 1.0f, 0.80f}; }
 ccColor4F noTouchColor() { return {0.65f, 0.65f, 0.65f, 0.75f}; }
 ccColor4F queryColor() { return {0.15f, 0.75f, 1.0f, 0.65f}; }
+ccColor4F cameraColor() { return {1.0f, 1.0f, 1.0f, 0.45f}; }
 
 world::CollisionPoint rectCenter(world::WorldRect const& rect) {
     return {rect.x + rect.width * 0.5f, rect.y + rect.height * 0.5f};
@@ -44,7 +47,7 @@ bool CollisionDebugOverlay::attach(PlayLayer* playLayer) {
         const auto winSize = CCDirector::get()->getWinSize();
         m_label->setAnchorPoint({1.0f, 1.0f});
         m_label->setPosition({winSize.width - 8.0f, winSize.height - 8.0f});
-        m_label->setScale(0.32f);
+        m_label->setScale(0.29f);
         m_label->setZOrder(1000000);
         m_label->setOpacity(235);
         m_label->setID("collision-debug-hud"_spr);
@@ -68,6 +71,32 @@ void CollisionDebugOverlay::setEnabled(bool enabled) {
 void CollisionDebugOverlay::setObjectLabelsEnabled(bool enabled) {
     m_objectLabelsEnabled = enabled;
     if (!enabled) hideObjectLabels();
+}
+
+world::WorldRect CollisionDebugOverlay::visibleWorldRect() const {
+    if (!m_playLayer || !m_playLayer->m_objectLayer) return {};
+
+    const auto win = CCDirector::get()->getWinSize();
+    const std::array<CCPoint, 4> screenCorners{{
+        {0.0f, 0.0f},
+        {win.width, 0.0f},
+        {win.width, win.height},
+        {0.0f, win.height},
+    }};
+
+    auto first = m_playLayer->m_objectLayer->convertToNodeSpace(screenCorners[0]);
+    float minX = first.x;
+    float maxX = first.x;
+    float minY = first.y;
+    float maxY = first.y;
+    for (std::size_t i = 1; i < screenCorners.size(); ++i) {
+        auto p = m_playLayer->m_objectLayer->convertToNodeSpace(screenCorners[i]);
+        minX = std::min(minX, p.x);
+        maxX = std::max(maxX, p.x);
+        minY = std::min(minY, p.y);
+        maxY = std::max(maxY, p.y);
+    }
+    return {minX, minY, maxX - minX, maxY - minY};
 }
 
 void CollisionDebugOverlay::drawBounds(
@@ -105,8 +134,6 @@ void CollisionDebugOverlay::drawPrimitive(world::CollisionPrimitive const& primi
     else if (primitive.classification == world::GameplayObjectType::Solid) color = solidColor();
     else if (primitive.classification == world::GameplayObjectType::Hazard) color = hazardColor();
 
-    // IMPORTANT: only raw OBJECT BOUNDS are drawn in this gate. We no longer
-    // rotate getObjectRect() again or fabricate slope triangles.
     drawBounds(primitive.objectBounds, color, 0.75f);
     drawCross(primitive.x, primitive.y, color, 2.25f);
 }
@@ -155,6 +182,7 @@ void CollisionDebugOverlay::update(
     world::CollisionQueryResult const& query,
     world::CollisionTraceQuery* trace
 ) {
+    m_lastStats = {};
     if (!m_enabled || !attached()) return;
 
     m_drawNode->clear();
@@ -165,18 +193,35 @@ void CollisionDebugOverlay::update(
         return;
     }
 
+    m_lastStats.visibleWorldRect = visibleWorldRect();
     drawBounds(query.region, queryColor(), 0.45f);
 
     std::unordered_set<std::size_t> mainDrawnSources;
     mainDrawnSources.reserve(query.primitiveIndices.size() * 2 + 1);
-    for (auto primitiveIndex : query.primitiveIndices) {
-        if (primitiveIndex >= collisionWorld.primitives().size()) continue;
-        auto const& primitive = collisionWorld.primitives()[primitiveIndex];
-        mainDrawnSources.insert(primitive.sourceIndex);
+    m_lastStats.queryReceived = query.primitiveIndices.size();
 
-        if (primitive.classification == world::GameplayObjectType::Solid
-            || primitive.classification == world::GameplayObjectType::Hazard) {
+    if (m_fullWorldEnabled) {
+        drawBounds(m_lastStats.visibleWorldRect, cameraColor(), 0.35f);
+        auto visible = world::bruteForceQueryRegion(collisionWorld, m_lastStats.visibleWorldRect);
+        m_lastStats.fullWorldReceived = visible.primitiveIndices.size();
+        for (auto primitiveIndex : visible.primitiveIndices) {
+            if (primitiveIndex >= collisionWorld.primitives().size()) continue;
+            auto const& primitive = collisionWorld.primitives()[primitiveIndex];
             drawPrimitive(primitive);
+            mainDrawnSources.insert(primitive.sourceIndex);
+            ++m_lastStats.fullWorldDrawn;
+        }
+    } else {
+        for (auto primitiveIndex : query.primitiveIndices) {
+            if (primitiveIndex >= collisionWorld.primitives().size()) continue;
+            auto const& primitive = collisionWorld.primitives()[primitiveIndex];
+            mainDrawnSources.insert(primitive.sourceIndex);
+
+            if (primitive.classification == world::GameplayObjectType::Solid
+                || primitive.classification == world::GameplayObjectType::Hazard) {
+                drawPrimitive(primitive);
+                ++m_lastStats.queryDrawn;
+            }
         }
     }
 
@@ -185,12 +230,11 @@ void CollisionDebugOverlay::update(
     if (trace) {
         for (auto& record : trace->records) {
             record.rendererReceived = true;
+            ++m_lastStats.traceReceived;
 
-            // If the main collision renderer did not draw this source, trace
-            // mode still shows its object bounds. This makes MISSING distinct
-            // from intentionally unsupported/no-touch.
             if (!mainDrawnSources.contains(record.sourceIndex)) {
                 drawTraceRecord(record);
+                ++m_lastStats.traceDrawn;
             } else {
                 record.rendererDrew = true;
             }
@@ -220,20 +264,23 @@ void CollisionDebugOverlay::update(
 
     auto const& metrics = collisionWorld.metrics();
     auto const& benchmark = metrics.queryBenchmark;
+    const char* drawMode = m_fullWorldEnabled ? "FULL WORLD" : "QUERY ONLY";
     const auto text = trace
         ? fmt::format(
-            "COLLISION WORLD: READY\n"
-            "INDEXED OBJECTS: {}  SILENTLY LOST: {}\n"
+            "COLLISION WORLD: READY  DRAW:{}\n"
+            "INDEXED:{} LOST:{} HASHGEN:{}\n"
             "NEARBY S:{} H:{} SLOPE:{} UNSUP:{}\n"
-            "QUERY RECT x:{:.1f} y:{:.1f} w:{:.1f} h:{:.1f}\n"
-            "MAIN HASH cells:{} inCells:{} dedup:{} intersect:{} returned:{}\n"
-            "MAIN dup:{} invalid:{} invExpected:{} missing:{} unexpected:{}\n"
-            "TRACE HASH cells:{} inCells:{} dedup:{} intersect:{} records:{}\n"
-            "QUERY: {:.4f} ms  PARSE:{:.3f} CW:{:.3f} HASH:{:.3f} ms\n"
-            "BENCH n={} avg:{:.4f} p95:{:.4f} p99:{:.4f} ms\n"
+            "QUERY x:{:.1f} y:{:.1f} w:{:.1f} h:{:.1f}\n"
+            "HASH cells:{} in:{} dedup:{} intersect:{} returned:{}\n"
+            "INV expected:{} missing:{} unexpected:{} dup:{} invalid:{}\n"
+            "RENDER query:{}/{} full:{}/{} trace:{}/{}\n"
+            "QUERY:{:.4f}ms PARSE:{:.3f} CW:{:.3f} HASH:{:.3f}ms\n"
+            "BENCH n={} avg:{:.4f} p95:{:.4f} p99:{:.4f}ms\n"
             "GAMEPLAY HITBOXES: NOT VERIFIED",
+            drawMode,
             metrics.indexedObjects,
             metrics.silentlyLost,
+            collisionWorld.spatialHashGeneration(),
             query.solids,
             query.hazards,
             query.slopes,
@@ -247,16 +294,17 @@ void CollisionDebugOverlay::update(
             query.debug.objectsAfterDedup,
             query.debug.objectsAfterIntersection,
             query.primitiveIndices.size(),
-            trace->duplicateMainResults,
-            trace->invalidMainIndices,
             trace->mainExpectedByFullScan,
             trace->mainMissing,
             trace->mainUnexpected,
-            trace->diagnosticHashDebug.cellsVisited,
-            trace->diagnosticHashDebug.objectsInCells,
-            trace->diagnosticHashDebug.objectsAfterDedup,
-            trace->diagnosticHashDebug.objectsAfterIntersection,
-            trace->records.size(),
+            trace->duplicateMainResults,
+            trace->invalidMainIndices,
+            m_lastStats.queryDrawn,
+            m_lastStats.queryReceived,
+            m_lastStats.fullWorldDrawn,
+            m_lastStats.fullWorldReceived,
+            m_lastStats.traceDrawn,
+            m_lastStats.traceReceived,
             query.queryMs,
             metrics.parseTimeMs,
             metrics.collisionWorldBuildTimeMs,
@@ -267,20 +315,18 @@ void CollisionDebugOverlay::update(
             benchmark.p99Ms
         )
         : fmt::format(
-            "COLLISION WORLD: READY\n"
-            "INDEXED OBJECTS: {}  SILENTLY LOST: {}\n"
-            "NEARBY SOLIDS: {}\n"
-            "NEARBY HAZARDS: {}\n"
-            "NEARBY SLOPES: {}\n"
-            "NEARBY UNSUPPORTED: {}\n"
-            "QUERY TIME: {:.4f} ms\n"
-            "PARSE: {:.3f} ms\n"
-            "CW BUILD: {:.3f} ms\n"
-            "HASH BUILD: {:.3f} ms\n"
-            "QUERY BENCH n={} avg:{:.4f} p95:{:.4f} p99:{:.4f} ms\n"
+            "COLLISION WORLD: READY  DRAW:{}\n"
+            "INDEXED:{} LOST:{} HASHGEN:{}\n"
+            "NEARBY SOLIDS:{} HAZARDS:{} SLOPES:{} UNSUP:{}\n"
+            "QUERY TIME:{:.4f}ms\n"
+            "PARSE:{:.3f} CW:{:.3f} HASH:{:.3f}ms\n"
+            "RENDER query:{}/{} full:{}/{}\n"
+            "BENCH n={} avg:{:.4f} p95:{:.4f} p99:{:.4f}ms\n"
             "GAMEPLAY HITBOXES: NOT VERIFIED",
+            drawMode,
             metrics.indexedObjects,
             metrics.silentlyLost,
+            collisionWorld.spatialHashGeneration(),
             query.solids,
             query.hazards,
             query.slopes,
@@ -289,6 +335,10 @@ void CollisionDebugOverlay::update(
             metrics.parseTimeMs,
             metrics.collisionWorldBuildTimeMs,
             metrics.spatialHashBuildTimeMs,
+            m_lastStats.queryDrawn,
+            m_lastStats.queryReceived,
+            m_lastStats.fullWorldDrawn,
+            m_lastStats.fullWorldReceived,
             benchmark.samples,
             benchmark.averageMs,
             benchmark.p95Ms,
