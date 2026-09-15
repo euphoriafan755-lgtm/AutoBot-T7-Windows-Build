@@ -1,46 +1,22 @@
-# AutoBot T7 V0.1 — Zero-Shot Core (first implementation delivery)
+# AutoBot T7 — V0.1 Zero-Shot Core
 
-This snapshot intentionally implements only the foundation requested for the first delivery:
+Current development gate: **Collision World audit / repair**.
 
-- Geode C++ project structure for Geometry Dash 2.2081 / Geode 5.10.1
-- direct `GameStateReader`
-- `GameSnapshot` / `PlayerState`
-- in-game diagnostic HUD
-- initial `LevelParser`
-- independent `WorldObject` / `StaticWorld` copies
+Runtime-verified baseline remains frozen around:
+- GameStateReader
+- DiagnosticHUD
+- initial LevelParser behavior
+- PlayLayer postUpdate hook
 
-Not implemented yet in this snapshot:
+Collision World work in this gate adds:
+- copied/stable collision identities (no `GameObject*` persistence)
+- SpatialHash broad-phase indexing
+- detailed query-stage diagnostics
+- CollisionTrace end-to-end pipeline tracing
+- classification/consistency audits
+- temporary collider/object-label overlay
+- parse stability fingerprints
 
-- collision spatial hash
-- physics validation harness
-- Cube physics simulator
-- trajectory generator
-- Show Trajectory renderer
-- planner / search
-- realtime replanning
-- tick-bound input execution
-- AttemptBudgetManager
-- FailureAnalyzer
+Important: `GameObject::getObjectRect()` is treated as **OBJECT BOUNDS / broad-phase geometry only**. Exact gameplay hitboxes remain **NOT VERIFIED** and are not invented in this gate.
 
-The parser classifies game objects but classification is not a claim that every classified object is simulated yet.
-
-## Build
-
-Set `GEODE_SDK` to a Geode 5.10.1 SDK checkout/install, then:
-
-```sh
-cmake -S . -B build
-cmake --build build --config RelWithDebInfo
-```
-
-or, with the Geode CLI configured:
-
-```sh
-geode build
-```
-
-## Verification caveat
-
-`GameSnapshot::gameTick` is currently a monotonic `postUpdate` sample sequence. The HUD labels it explicitly as an unverified exact GD tick. Exact physics-tick synchronization is intentionally deferred until runtime timing validation, rather than being guessed.
-
-The parser marks objects outside the declared Cube V0.1 subset as `V01Support::NotSupported`; classification never implies simulation support.
+No PhysicsEngine, trajectory generation, planner, or input controller is included in this gate.
