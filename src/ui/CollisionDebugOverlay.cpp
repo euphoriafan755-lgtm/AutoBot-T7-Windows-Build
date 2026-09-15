@@ -40,7 +40,7 @@ bool CollisionDebugOverlay::attach(PlayLayer* playLayer) {
     if (attached()) return true;
     if (!playLayer) return false;
 
-    auto* objectLayer = playLayer->getObjectLayer();
+    auto* objectLayer = playLayer->m_objectLayer;
     if (!objectLayer) return false;
 
     if (!m_drawNode) {
