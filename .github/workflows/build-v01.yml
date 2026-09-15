@@ -1,0 +1,103 @@
+name: AutoBot T7 v0.1 Geode Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows / GD 2.2081 / Geode 5.10.1
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Record runner toolchain before build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          "OS=$([System.Environment]::OSVersion.VersionString)" | Tee-Object -FilePath ci-logs/toolchain.txt
+          "RUNNER_OS=$env:RUNNER_OS" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          "RUNNER_ARCH=$env:RUNNER_ARCH" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          cmake --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          clang --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          clang++ --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          Get-Content mod.json | Tee-Object -FilePath ci-logs/mod-json.txt
+
+      - name: Build real Geode mod
+        id: geode_build
+        continue-on-error: true
+        uses: geode-sdk/build-geode-mod@e26ece68d56a3cfa0a7f790d8120c965008c3d08
+        with:
+          sdk: given
+          cli: v3.7.4
+          target: Win64
+          build-config: Release
+          use-lto: false
+          configure-args: '-DCMAKE_CXX_FLAGS=/W4'
+
+      - name: Collect build products and metadata
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+
+          "BUILD_ACTION_OUTCOME=${{ steps.geode_build.outcome }}" | Tee-Object -FilePath ci-logs/build-outcome.txt
+          "GEODE_VERSION=5.10.1" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
+          "GD_TARGET=2.2081" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
+          "CONFIGURATION=Release" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
+
+          if (Get-Command geode -ErrorAction SilentlyContinue) {
+            geode --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          }
+
+          if (Test-Path build) {
+            Get-ChildItem build -Recurse -File | Select-Object FullName,Length | Format-Table -AutoSize | Out-String -Width 4096 | Set-Content ci-logs/build-files.txt
+          } else {
+            "build directory not created" | Set-Content ci-logs/build-files.txt
+          }
+
+          $geodeFiles = @(Get-ChildItem -Path . -Recurse -Filter *.geode -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\.git\\' })
+          if ($geodeFiles.Count -gt 0) {
+            $selected = $geodeFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            Copy-Item $selected.FullName ci-artifacts/AutoBot-T7-v0.1.geode -Force
+            $hash = (Get-FileHash ci-artifacts/AutoBot-T7-v0.1.geode -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  AutoBot-T7-v0.1.geode" | Set-Content ci-artifacts/SHA256SUMS.txt
+            "PACKAGE_FOUND=$($selected.FullName)" | Add-Content ci-logs/build-outcome.txt
+            "PACKAGE_SIZE=$((Get-Item ci-artifacts/AutoBot-T7-v0.1.geode).Length)" | Add-Content ci-logs/build-outcome.txt
+            "PACKAGE_SHA256=$hash" | Add-Content ci-logs/build-outcome.txt
+          } else {
+            "PACKAGE_FOUND=NO" | Add-Content ci-logs/build-outcome.txt
+          }
+
+          Copy-Item BUILD-REPORT.txt ci-artifacts/BUILD-REPORT-source.txt -Force
+          Copy-Item ci-logs ci-artifacts/ci-logs -Recurse -Force
+
+      - name: Upload build artifacts and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoBot-T7-v0.1-build
+          path: ci-artifacts/
+          if-no-files-found: warn
+
+      - name: Enforce build gate
+        if: always()
+        shell: pwsh
+        run: |
+          if ("${{ steps.geode_build.outcome }}" -ne "success") {
+            Write-Error "REAL GEODE BUILD GATE FAILED"
+            exit 1
+          }
+          if (-not (Test-Path ci-artifacts/AutoBot-T7-v0.1.geode)) {
+            Write-Error "Build action succeeded but no .geode package was found"
+            exit 1
+          }
+          Write-Host "REAL GEODE CONFIGURE/COMPILE/LINK/PACKAGE GATE PASSED"
