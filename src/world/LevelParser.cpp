@@ -153,20 +153,37 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
         if (!object) continue;
 
         const auto rect = object->getObjectRect();
-        const auto position = object->getRealPosition();
+        const auto realPosition = object->getRealPosition();
+        const auto nodePosition = object->getPosition();
+        const auto anchor = object->getAnchorPoint();
+        const auto contentSize = object->getContentSize();
 
         WorldObject copy{};
         copy.objectID = object->m_objectID;
+        copy.uniqueID = object->m_uniqueID;
         copy.rawGameObjectType = static_cast<int>(object->m_objectType);
         copy.type = classify(object->m_objectType, object->m_objectID);
         copy.v01Support = classifyV01Support(object->m_objectType, object->m_objectID);
-        copy.x = position.x;
-        copy.y = position.y;
+        copy.x = realPosition.x;
+        copy.y = realPosition.y;
+        copy.nodeX = nodePosition.x;
+        copy.nodeY = nodePosition.y;
         copy.rotation = object->getRotation();
+        copy.rotationX = object->getRotationX();
+        copy.rotationY = object->getRotationY();
         copy.scaleX = object->getScaleX();
         copy.scaleY = object->getScaleY();
+        copy.anchorX = anchor.x;
+        copy.anchorY = anchor.y;
+        copy.contentWidth = contentSize.width;
+        copy.contentHeight = contentSize.height;
         copy.objectRect = WorldRect{rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
         copy.enabled = !object->m_isDisabled;
+        copy.groupDisabled = object->m_isGroupDisabled;
+        copy.noTouch = object->m_isNoTouch;
+        copy.passable = object->m_isPassable;
+        copy.flipX = object->isFlipX();
+        copy.flipY = object->isFlipY();
         copy.slope = object->m_objectType == GameObjectType::Slope;
 
         incrementCount(world, copy.type);
