@@ -31,20 +31,43 @@ struct WorldRect {
 };
 
 struct WorldObject {
+    // Persistent copied identity. objectID is the GD object kind and is NOT
+    // unique per instance. sourceIndex (the index in StaticWorld::objects)
+    // remains the canonical in-memory identity for this parse.
     int objectID = 0;
+    int uniqueID = 0;
     int rawGameObjectType = -1;
     GameplayObjectType type = GameplayObjectType::Unknown;
     V01Support v01Support = V01Support::NotSupported;
 
+    // World/real position used by CollisionWorld.
     float x = 0.0f;
     float y = 0.0f;
+
+    // Raw node transform copied for diagnostics. These are never used to
+    // mutate broad-phase bounds or invent gameplay hitboxes.
+    float nodeX = 0.0f;
+    float nodeY = 0.0f;
     float rotation = 0.0f;
+    float rotationX = 0.0f;
+    float rotationY = 0.0f;
     float scaleX = 1.0f;
     float scaleY = 1.0f;
+    float anchorX = 0.5f;
+    float anchorY = 0.5f;
+    float contentWidth = 0.0f;
+    float contentHeight = 0.0f;
 
+    // GameObject::getObjectRect() copied in world/object-layer coordinates.
+    // This is an OBJECT BOUND / broad-phase bound only.
     WorldRect objectRect{};
 
     bool enabled = true;
+    bool groupDisabled = false;
+    bool noTouch = false;
+    bool passable = false;
+    bool flipX = false;
+    bool flipY = false;
     bool slope = false;
 };
 
