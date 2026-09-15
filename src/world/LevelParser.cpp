@@ -8,8 +8,6 @@ namespace autobot::world {
 namespace {
 
 bool isSpeedPortalObjectID(int objectID) {
-    // Vanilla speed portals: slow, normal, fast, faster, fastest.
-    // Classification only; physics behavior is intentionally NOT implemented yet.
     switch (objectID) {
         case 200:
         case 201:
@@ -37,20 +35,16 @@ void incrementCount(StaticWorld& world, GameplayObjectType type) {
 } // namespace
 
 GameplayObjectType LevelParser::classify(GameObjectType type, int objectID) {
-    if (isSpeedPortalObjectID(objectID)) {
-        return GameplayObjectType::Portal;
-    }
+    if (isSpeedPortalObjectID(objectID)) return GameplayObjectType::Portal;
 
     switch (type) {
         case GameObjectType::Solid:
         case GameObjectType::Slope:
         case GameObjectType::Breakable:
             return GameplayObjectType::Solid;
-
         case GameObjectType::Hazard:
         case GameObjectType::AnimatedHazard:
             return GameplayObjectType::Hazard;
-
         case GameObjectType::YellowJumpRing:
         case GameObjectType::PinkJumpRing:
         case GameObjectType::GravityRing:
@@ -63,14 +57,12 @@ GameplayObjectType LevelParser::classify(GameObjectType type, int objectID) {
         case GameObjectType::SpiderOrb:
         case GameObjectType::TeleportOrb:
             return GameplayObjectType::Orb;
-
         case GameObjectType::YellowJumpPad:
         case GameObjectType::PinkJumpPad:
         case GameObjectType::GravityPad:
         case GameObjectType::RedJumpPad:
         case GameObjectType::SpiderPad:
             return GameplayObjectType::Pad;
-
         case GameObjectType::InverseGravityPortal:
         case GameObjectType::NormalGravityPortal:
         case GameObjectType::ShipPortal:
@@ -90,19 +82,15 @@ GameplayObjectType LevelParser::classify(GameObjectType type, int objectID) {
         case GameObjectType::SwingPortal:
         case GameObjectType::GravityTogglePortal:
             return GameplayObjectType::Portal;
-
         case GameObjectType::Decoration:
             return GameplayObjectType::Decoration;
-
         default:
             return GameplayObjectType::Unknown;
     }
 }
 
 V01Support LevelParser::classifyV01Support(GameObjectType type, int objectID) {
-    if (isSpeedPortalObjectID(objectID)) {
-        return V01Support::Supported;
-    }
+    if (isSpeedPortalObjectID(objectID)) return V01Support::Supported;
 
     switch (type) {
         case GameObjectType::Solid:
@@ -124,15 +112,62 @@ V01Support LevelParser::classifyV01Support(GameObjectType type, int objectID) {
         case GameObjectType::RegularSizePortal:
         case GameObjectType::MiniSizePortal:
             return V01Support::Supported;
-
         case GameObjectType::Decoration:
             return V01Support::NonGameplay;
-
         default:
-            // This includes non-Cube gamemode portals, dual, teleport, dash,
-            // spider-specific objects, breakables, modifiers, and unknowns.
             return V01Support::NotSupported;
     }
+}
+
+bool LevelParser::snapshotObjectAt(
+    PlayLayer* playLayer,
+    std::size_t objectArrayIndex,
+    WorldObject& out
+) {
+    if (!playLayer || !playLayer->m_objects) return false;
+    if (objectArrayIndex >= playLayer->m_objects->count()) return false;
+
+    auto* object = static_cast<GameObject*>(playLayer->m_objects->objectAtIndex(objectArrayIndex));
+    if (!object) return false;
+
+    const auto rect = object->getObjectRect();
+    const auto realPosition = object->getRealPosition();
+    const auto nodePosition = object->getPosition();
+    const auto anchor = object->getAnchorPoint();
+    const auto contentSize = object->getContentSize();
+
+    WorldObject copy{};
+    copy.objectID = object->m_objectID;
+    copy.uniqueID = object->m_uniqueID;
+    copy.playLayerObjectIndex = objectArrayIndex;
+    copy.rawGameObjectType = static_cast<int>(object->m_objectType);
+    copy.type = classify(object->m_objectType, object->m_objectID);
+    copy.v01Support = classifyV01Support(object->m_objectType, object->m_objectID);
+    copy.x = realPosition.x;
+    copy.y = realPosition.y;
+    copy.nodeX = nodePosition.x;
+    copy.nodeY = nodePosition.y;
+    copy.rotation = object->getRotation();
+    copy.rotationX = object->getRotationX();
+    copy.rotationY = object->getRotationY();
+    copy.scaleX = object->getScaleX();
+    copy.scaleY = object->getScaleY();
+    copy.anchorX = anchor.x;
+    copy.anchorY = anchor.y;
+    copy.contentWidth = contentSize.width;
+    copy.contentHeight = contentSize.height;
+    copy.objectRect = WorldRect{rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+    copy.enabled = !object->m_isDisabled;
+    copy.groupDisabled = object->m_isGroupDisabled;
+    copy.noTouch = object->m_isNoTouch;
+    copy.passable = object->m_isPassable;
+    copy.flipX = object->isFlipX();
+    copy.flipY = object->isFlipY();
+    copy.slope = object->m_objectType == GameObjectType::Slope;
+    copy.groupCount = object->m_groupCount;
+
+    out = copy;
+    return true;
 }
 
 StaticWorld LevelParser::parse(PlayLayer* playLayer) {
@@ -147,44 +182,12 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
         return world;
     }
 
-    world.objects.reserve(playLayer->m_objects->count());
+    const auto objectCount = static_cast<std::size_t>(playLayer->m_objects->count());
+    world.objects.reserve(objectCount);
 
-    for (auto* object : geode::cocos::CCArrayExt<GameObject, false>(playLayer->m_objects)) {
-        if (!object) continue;
-
-        const auto rect = object->getObjectRect();
-        const auto realPosition = object->getRealPosition();
-        const auto nodePosition = object->getPosition();
-        const auto anchor = object->getAnchorPoint();
-        const auto contentSize = object->getContentSize();
-
+    for (std::size_t objectArrayIndex = 0; objectArrayIndex < objectCount; ++objectArrayIndex) {
         WorldObject copy{};
-        copy.objectID = object->m_objectID;
-        copy.uniqueID = object->m_uniqueID;
-        copy.rawGameObjectType = static_cast<int>(object->m_objectType);
-        copy.type = classify(object->m_objectType, object->m_objectID);
-        copy.v01Support = classifyV01Support(object->m_objectType, object->m_objectID);
-        copy.x = realPosition.x;
-        copy.y = realPosition.y;
-        copy.nodeX = nodePosition.x;
-        copy.nodeY = nodePosition.y;
-        copy.rotation = object->getRotation();
-        copy.rotationX = object->getRotationX();
-        copy.rotationY = object->getRotationY();
-        copy.scaleX = object->getScaleX();
-        copy.scaleY = object->getScaleY();
-        copy.anchorX = anchor.x;
-        copy.anchorY = anchor.y;
-        copy.contentWidth = contentSize.width;
-        copy.contentHeight = contentSize.height;
-        copy.objectRect = WorldRect{rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
-        copy.enabled = !object->m_isDisabled;
-        copy.groupDisabled = object->m_isGroupDisabled;
-        copy.noTouch = object->m_isNoTouch;
-        copy.passable = object->m_isPassable;
-        copy.flipX = object->isFlipX();
-        copy.flipY = object->isFlipY();
-        copy.slope = object->m_objectType == GameObjectType::Slope;
+        if (!snapshotObjectAt(playLayer, objectArrayIndex, copy)) continue;
 
         incrementCount(world, copy.type);
         if (copy.v01Support == V01Support::NotSupported && copy.type != GameplayObjectType::Decoration) {
