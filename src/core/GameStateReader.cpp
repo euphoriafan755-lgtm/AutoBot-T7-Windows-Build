@@ -47,7 +47,7 @@ GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTi
     snapshot.player.mini = player->m_vehicleSize < 1.0f;
     snapshot.player.grounded = player->m_isOnGround;
     snapshot.player.upsideDown = player->m_isUpsideDown;
-    snapshot.player.holding = player->m_isHolding;
+    snapshot.player.holding = player->buttonDown(PlayerButton::Jump);
     snapshot.player.dead = player->m_isDead;
 
     return snapshot;
