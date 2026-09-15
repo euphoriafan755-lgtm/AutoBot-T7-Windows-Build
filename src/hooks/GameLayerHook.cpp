@@ -1,5 +1,5 @@
 #include <Geode/Geode.hpp>
-#include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/PlayLayer.hpp>
 
 #include "autobot/core/GameStateReader.hpp"
 #include "autobot/ui/DiagnosticHUD.hpp"
@@ -7,7 +7,7 @@
 
 using namespace geode::prelude;
 
-class $modify(AutoBotT7GameLayerHook, GJBaseGameLayer) {
+class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     struct Fields {
         std::uint64_t tick = 0;
         bool parserAttempted = false;
@@ -16,10 +16,10 @@ class $modify(AutoBotT7GameLayerHook, GJBaseGameLayer) {
     };
 
     void postUpdate(float dt) {
-        GJBaseGameLayer::postUpdate(dt);
+        PlayLayer::postUpdate(dt);
 
         auto* playLayer = PlayLayer::get();
-        if (!playLayer || static_cast<GJBaseGameLayer*>(playLayer) != this) {
+        if (!playLayer || playLayer != this) {
             return;
         }
 
