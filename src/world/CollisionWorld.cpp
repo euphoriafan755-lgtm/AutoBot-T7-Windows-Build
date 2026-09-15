@@ -1,7 +1,6 @@
 #include "autobot/world/CollisionWorld.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <numeric>
@@ -12,8 +11,6 @@ namespace autobot::world {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-constexpr float kPi = 3.14159265358979323846f;
 
 std::size_t categoryIndex(GameplayObjectType type) {
     switch (type) {
@@ -28,76 +25,26 @@ std::size_t categoryIndex(GameplayObjectType type) {
     return 6;
 }
 
-float normalizedRotation(float degrees) {
-    float value = std::fmod(degrees, 360.0f);
-    if (value < 0.0f) value += 360.0f;
-    return value;
-}
-
-bool nearMultipleOf90(float degrees) {
-    const float normalized = normalizedRotation(degrees);
-    const float nearest = std::round(normalized / 90.0f) * 90.0f;
-    return std::fabs(normalized - nearest) < 0.01f
-        || std::fabs(normalized - nearest + 360.0f) < 0.01f;
-}
-
-CollisionPoint rotatePoint(CollisionPoint point, CollisionPoint center, float degrees) {
-    const float radians = degrees * kPi / 180.0f;
-    const float cosine = std::cos(radians);
-    const float sine = std::sin(radians);
-    const float localX = point.x - center.x;
-    const float localY = point.y - center.y;
-
-    return {
-        center.x + localX * cosine - localY * sine,
-        center.y + localX * sine + localY * cosine,
-    };
-}
-
-std::array<CollisionPoint, 4> rectVertices(WorldRect const& rect, float rotation) {
+std::array<CollisionPoint, 4> boundsVertices(WorldRect const& rect) {
     const float x2 = rect.x + rect.width;
     const float y2 = rect.y + rect.height;
     const float left = std::min(rect.x, x2);
     const float right = std::max(rect.x, x2);
     const float bottom = std::min(rect.y, y2);
     const float top = std::max(rect.y, y2);
-    const CollisionPoint center{(left + right) * 0.5f, (bottom + top) * 0.5f};
-
-    std::array<CollisionPoint, 4> result{{
-        {left, bottom},
-        {right, bottom},
-        {right, top},
-        {left, top},
-    }};
-
-    if (std::fabs(rotation) > 0.01f) {
-        for (auto& point : result) point = rotatePoint(point, center, rotation);
-    }
-    return result;
+    return {{{left, bottom}, {right, bottom}, {right, top}, {left, top}}};
 }
 
-std::array<CollisionPoint, 4> slopeCandidateVertices(WorldRect const& rect, float rotation) {
-    const float x2 = rect.x + rect.width;
-    const float y2 = rect.y + rect.height;
-    const float left = std::min(rect.x, x2);
-    const float right = std::max(rect.x, x2);
-    const float bottom = std::min(rect.y, y2);
-    const float top = std::max(rect.y, y2);
-    const CollisionPoint center{(left + right) * 0.5f, (bottom + top) * 0.5f};
+bool gameplayRelevant(GameplayObjectType type) {
+    return type == GameplayObjectType::Solid
+        || type == GameplayObjectType::Hazard
+        || type == GameplayObjectType::Orb
+        || type == GameplayObjectType::Pad
+        || type == GameplayObjectType::Portal;
+}
 
-    // This triangle is deliberately only a diagnostic candidate derived from
-    // OBJECT BOUNDS. It is never marked VERIFIED here.
-    std::array<CollisionPoint, 4> result{{
-        {left, bottom},
-        {right, bottom},
-        {right, top},
-        {0.0f, 0.0f},
-    }};
-
-    for (std::size_t i = 0; i < 3; ++i) {
-        result[i] = rotatePoint(result[i], center, rotation);
-    }
-    return result;
+bool collisionSurface(GameplayObjectType type) {
+    return type == GameplayObjectType::Solid || type == GameplayObjectType::Hazard;
 }
 
 double elapsedMs(Clock::time_point start, Clock::time_point end) {
@@ -117,50 +64,69 @@ double percentile(std::vector<double> const& values, double fraction) {
 CollisionPrimitive CollisionWorld::makePrimitive(WorldObject const& object, std::size_t sourceIndex) {
     CollisionPrimitive primitive{};
     primitive.sourceIndex = sourceIndex;
+    primitive.sourceUniqueID = object.uniqueID;
     primitive.objectID = object.objectID;
+    primitive.rawGameObjectType = object.rawGameObjectType;
     primitive.classification = object.type;
     primitive.support = object.v01Support;
     primitive.objectBounds = object.objectRect;
     primitive.broadphaseBounds = object.objectRect;
     primitive.gameplayBounds = object.objectRect;
+    primitive.vertices = boundsVertices(object.objectRect);
+    primitive.vertexCount = 4;
     primitive.x = object.x;
     primitive.y = object.y;
+    primitive.nodeX = object.nodeX;
+    primitive.nodeY = object.nodeY;
     primitive.rotation = object.rotation;
+    primitive.rotationX = object.rotationX;
+    primitive.rotationY = object.rotationY;
+    primitive.scaleX = object.scaleX;
+    primitive.scaleY = object.scaleY;
+    primitive.anchorX = object.anchorX;
+    primitive.anchorY = object.anchorY;
+    primitive.contentWidth = object.contentWidth;
+    primitive.contentHeight = object.contentHeight;
+    primitive.flipX = object.flipX;
+    primitive.flipY = object.flipY;
+    primitive.noTouch = object.noTouch;
+    primitive.passable = object.passable;
+    primitive.groupDisabled = object.groupDisabled;
     primitive.enabled = object.enabled;
     primitive.slope = object.slope;
 
+    // getObjectRect() is an OBJECT BOUND / broad-phase bound. The previous
+    // build rotated that rect again and fabricated slope triangles, which can
+    // double-apply/guess transforms. This gate now draws/indexes the copied
+    // bound only and keeps exact gameplay geometry explicitly NOT VERIFIED.
     if (object.type == GameplayObjectType::Solid) {
-        if (object.slope) {
-            primitive.shape = CollisionShapeKind::Triangle;
-            primitive.vertices = slopeCandidateVertices(object.objectRect, object.rotation);
-            primitive.vertexCount = 3;
-            primitive.geometryVerification = GeometryVerification::NotVerified;
-        } else if (nearMultipleOf90(object.rotation)) {
-            primitive.shape = CollisionShapeKind::AxisAlignedRect;
-            primitive.vertices = rectVertices(object.objectRect, 0.0f);
-            primitive.vertexCount = 4;
-            primitive.geometryVerification = GeometryVerification::NotVerified;
-        } else {
-            primitive.shape = CollisionShapeKind::RotatedRect;
-            primitive.vertices = rectVertices(object.objectRect, object.rotation);
-            primitive.vertexCount = 4;
-            primitive.geometryVerification = GeometryVerification::NotVerified;
-        }
+        primitive.shape = object.slope
+            ? CollisionShapeKind::SlopeBounds
+            : CollisionShapeKind::ObjectBounds;
+        primitive.geometryVerification = GeometryVerification::NotVerified;
+        primitive.participation = object.noTouch
+            ? CollisionParticipation::ExcludedNoTouch
+            : CollisionParticipation::CollisionSurface;
     } else if (object.type == GameplayObjectType::Hazard) {
         primitive.shape = CollisionShapeKind::HazardBounds;
-        primitive.vertices = rectVertices(object.objectRect, object.rotation);
-        primitive.vertexCount = 4;
         primitive.geometryVerification = GeometryVerification::NotVerified;
+        primitive.participation = object.noTouch
+            ? CollisionParticipation::ExcludedNoTouch
+            : CollisionParticipation::CollisionSurface;
     } else {
         primitive.shape = CollisionShapeKind::ReferenceBounds;
-        primitive.vertices = rectVertices(object.objectRect, object.rotation);
-        primitive.vertexCount = 4;
         primitive.geometryVerification = GeometryVerification::NotSupported;
+        primitive.participation = CollisionParticipation::GameplayReference;
     }
 
     if (object.v01Support == V01Support::NotSupported) {
         primitive.geometryVerification = GeometryVerification::NotSupported;
     }
+
+    // NoTouch disables collision/interaction. Keep ownership for diagnostics,
+    // but do not insert that object into the collision SpatialHash.
+    primitive.indexable = object.enabled
+        && primitive.participation != CollisionParticipation::ExcludedNoTouch;
 
     return primitive;
 }
@@ -182,6 +148,7 @@ std::vector<ClassificationAuditEntry> CollisionWorld::buildClassificationAudit(S
 
         if (object.enabled) ++entry.enabled;
         else ++entry.disabled;
+        if (object.noTouch) ++entry.noTouch;
     }
 
     std::vector<ClassificationAuditEntry> result;
@@ -195,7 +162,36 @@ std::vector<ClassificationAuditEntry> CollisionWorld::buildClassificationAudit(S
         if (a.total() != b.total()) return a.total() > b.total();
         return a.objectID < b.objectID;
     });
+    return result;
+}
 
+std::vector<RawClassificationAuditEntry> CollisionWorld::buildRawClassificationAudit(StaticWorld const& source) {
+    std::unordered_map<int, RawClassificationAuditEntry> byRaw;
+    byRaw.reserve(32);
+
+    for (std::size_t sourceIndex = 0; sourceIndex < source.objects.size(); ++sourceIndex) {
+        auto const& object = source.objects[sourceIndex];
+        auto& entry = byRaw[object.rawGameObjectType];
+        entry.rawGameObjectType = object.rawGameObjectType;
+        ++entry.finalCategoryCounts[categoryIndex(object.type)];
+        ++entry.total;
+        if (object.noTouch) ++entry.noTouch;
+        if (entry.sampleCount < entry.sampleObjectIDs.size()) {
+            entry.sampleObjectIDs[entry.sampleCount] = object.objectID;
+            entry.sampleSourceIndices[entry.sampleCount] = sourceIndex;
+            ++entry.sampleCount;
+        }
+    }
+
+    std::vector<RawClassificationAuditEntry> result;
+    result.reserve(byRaw.size());
+    for (auto const& [raw, entry] : byRaw) {
+        (void)raw;
+        result.push_back(entry);
+    }
+    std::sort(result.begin(), result.end(), [](auto const& a, auto const& b) {
+        return a.rawGameObjectType < b.rawGameObjectType;
+    });
     return result;
 }
 
@@ -224,11 +220,7 @@ QueryBenchmark CollisionWorld::benchmarkQueries(
         const auto start = Clock::now();
         auto nearby = index.queryRegion(region, primitives);
         const auto end = Clock::now();
-
-        // Keep the query observable to the optimizer without changing behavior.
-        if (nearby.size() == static_cast<std::size_t>(-1)) {
-            return benchmark;
-        }
+        if (nearby.size() == static_cast<std::size_t>(-1)) return benchmark;
         times.push_back(elapsedMs(start, end));
     }
 
@@ -244,7 +236,9 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
     m_ready = false;
     m_primitives.clear();
     m_spatialHash.clear();
+    m_sourceToPrimitive.clear();
     m_audit.clear();
+    m_rawAudit.clear();
     m_metrics = {};
     m_metrics.parseTimeMs = parseTimeMs;
     m_metrics.sourceObjects = source.objects.size();
@@ -255,25 +249,37 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
     const auto primitiveStart = Clock::now();
 
     m_audit = buildClassificationAudit(source);
+    m_rawAudit = buildRawClassificationAudit(source);
+    m_sourceToPrimitive.assign(source.objects.size(), kInvalidPrimitiveIndex);
     m_primitives.reserve(source.solids + source.hazards + source.orbs + source.pads + source.portals);
 
-    for (std::size_t index = 0; index < source.objects.size(); ++index) {
-        auto const& object = source.objects[index];
-        if (!object.enabled) continue;
+    for (std::size_t sourceIndex = 0; sourceIndex < source.objects.size(); ++sourceIndex) {
+        auto const& object = source.objects[sourceIndex];
+        auto& consistency = m_metrics.consistency[categoryIndex(object.type)];
+        ++consistency.parsed;
+        if (object.v01Support == V01Support::Supported) ++consistency.supported;
 
-        const bool gameplayRelevant =
-            object.type == GameplayObjectType::Solid
-            || object.type == GameplayObjectType::Hazard
-            || object.type == GameplayObjectType::Orb
-            || object.type == GameplayObjectType::Pad
-            || object.type == GameplayObjectType::Portal;
+        if (!gameplayRelevant(object.type)) {
+            ++consistency.intentionallySkipped;
+            continue;
+        }
+        if (!object.enabled) {
+            ++consistency.intentionallySkipped;
+            continue;
+        }
 
-        if (!gameplayRelevant) continue;
+        auto primitive = makePrimitive(object, sourceIndex);
+        const auto primitiveIndex = m_primitives.size();
+        m_sourceToPrimitive[sourceIndex] = primitiveIndex;
+        m_primitives.push_back(primitive);
+        ++consistency.colliderCreated;
 
-        auto primitive = makePrimitive(object, index);
-        if (primitive.classification == GameplayObjectType::Solid
-            || primitive.classification == GameplayObjectType::Hazard) {
-            ++m_metrics.collisionCandidates;
+        if (collisionSurface(primitive.classification)) {
+            if (primitive.participation == CollisionParticipation::CollisionSurface) {
+                ++m_metrics.collisionCandidates;
+            } else {
+                ++consistency.intentionallySkipped;
+            }
         }
 
         if (primitive.geometryVerification == GeometryVerification::NotVerified) {
@@ -281,25 +287,40 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
         } else if (primitive.geometryVerification == GeometryVerification::NotSupported) {
             ++m_metrics.notSupportedShapes;
         }
-
-        m_primitives.push_back(primitive);
     }
 
     const auto primitiveEnd = Clock::now();
     m_metrics.primitiveBuildTimeMs = elapsedMs(primitiveStart, primitiveEnd);
 
+    // Build-order invariant: finalize storage first, then index stable numeric
+    // primitive indices. SpatialHash never keeps pointers/references into the
+    // vector, so later vector reallocations cannot corrupt ownership.
     const auto hashStart = Clock::now();
     m_spatialHash.build(m_primitives);
     const auto hashEnd = Clock::now();
-
     m_metrics.spatialHashBuildTimeMs = elapsedMs(hashStart, hashEnd);
-    m_metrics.indexedObjects = m_primitives.size();
+
+    for (std::size_t primitiveIndex = 0; primitiveIndex < m_primitives.size(); ++primitiveIndex) {
+        auto const& primitive = m_primitives[primitiveIndex];
+        auto& consistency = m_metrics.consistency[categoryIndex(primitive.classification)];
+        if (!primitive.indexable) continue;
+        if (m_spatialHash.contains(primitiveIndex)) {
+            ++consistency.indexed;
+        } else {
+            ++consistency.silentlyLost;
+            ++m_metrics.silentlyLost;
+        }
+    }
+
+    m_metrics.indexedObjects = 0;
+    for (std::size_t i = 0; i < m_primitives.size(); ++i) {
+        if (m_spatialHash.contains(i)) ++m_metrics.indexedObjects;
+    }
     m_metrics.spatialCells = m_spatialHash.cellCount();
     m_metrics.queryBenchmark = benchmarkQueries(m_spatialHash, m_primitives);
 
     const auto totalEnd = Clock::now();
     m_metrics.collisionWorldBuildTimeMs = elapsedMs(totalStart, totalEnd);
-
     m_ready = true;
     return true;
 }
@@ -310,12 +331,15 @@ CollisionQueryResult CollisionWorld::queryRegion(WorldRect const& region) const 
     if (!m_ready) return result;
 
     const auto start = Clock::now();
-    result.primitiveIndices = m_spatialHash.queryRegion(region, m_primitives);
+    result.primitiveIndices = m_spatialHash.queryRegionDetailed(region, m_primitives, result.debug);
     const auto end = Clock::now();
     result.queryMs = elapsedMs(start, end);
 
     for (auto index : result.primitiveIndices) {
-        if (index >= m_primitives.size()) continue;
+        if (index >= m_primitives.size()) {
+            ++result.debug.invalidIndices;
+            continue;
+        }
         auto const& primitive = m_primitives[index];
 
         if (primitive.classification == GameplayObjectType::Solid) {
@@ -324,12 +348,10 @@ CollisionQueryResult CollisionWorld::queryRegion(WorldRect const& region) const 
         } else if (primitive.classification == GameplayObjectType::Hazard) {
             ++result.hazards;
         }
-
         if (primitive.geometryVerification == GeometryVerification::NotSupported) {
             ++result.unsupported;
         }
     }
-
     return result;
 }
 
@@ -348,6 +370,19 @@ CollisionQueryResult CollisionWorld::queryAhead(
         normalizedHeight,
     };
     return queryRegion(region);
+}
+
+std::size_t CollisionWorld::primitiveForSource(std::size_t sourceIndex) const {
+    if (sourceIndex >= m_sourceToPrimitive.size()) return kInvalidPrimitiveIndex;
+    return m_sourceToPrimitive[sourceIndex];
+}
+
+bool CollisionWorld::primitiveIndexed(std::size_t primitiveIndex) const {
+    return m_spatialHash.contains(primitiveIndex);
+}
+
+std::vector<SpatialCell> const& CollisionWorld::cellsForPrimitive(std::size_t primitiveIndex) const {
+    return m_spatialHash.cellsFor(primitiveIndex);
 }
 
 } // namespace autobot::world
