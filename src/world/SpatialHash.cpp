@@ -62,13 +62,12 @@ std::size_t SpatialHash::CellKeyHash::operator()(SpatialCell const& key) const n
 }
 
 int SpatialHash::cellCoordinate(float value) const {
-    // floor is required for negative world coordinates. Truncation would map
-    // -1..-119 into cell 0 and make queries asymmetric around the origin.
     return static_cast<int>(std::floor(value / m_cellSize));
 }
 
 void SpatialHash::build(std::vector<CollisionPrimitive> const& primitives) {
     clear();
+    ++m_generation;
     m_objectCells.resize(primitives.size());
 
     for (std::size_t index = 0; index < primitives.size(); ++index) {
@@ -95,6 +94,55 @@ void SpatialHash::build(std::vector<CollisionPrimitive> const& primitives) {
             }
         }
     }
+}
+
+void SpatialHash::refreshPrimitive(
+    std::size_t primitiveIndex,
+    CollisionPrimitive const& primitive
+) {
+    if (primitiveIndex >= m_objectCells.size()) {
+        m_objectCells.resize(primitiveIndex + 1);
+    }
+
+    auto& occupied = m_objectCells[primitiveIndex];
+    for (auto const& cell : occupied) {
+        auto it = m_cells.find(cell);
+        if (it == m_cells.end()) continue;
+        auto& bucket = it->second;
+        bucket.erase(
+            std::remove(bucket.begin(), bucket.end(), primitiveIndex),
+            bucket.end()
+        );
+        if (bucket.empty()) m_cells.erase(it);
+    }
+    occupied.clear();
+
+    auto const& bounds = primitive.broadphaseBounds;
+    if (!primitive.enabled || !primitive.indexable || !finiteRect(bounds)) {
+        ++m_generation;
+        return;
+    }
+
+    const auto e = extents(bounds);
+    const int minCellX = cellCoordinate(e.minX);
+    const int maxCellX = cellCoordinate(e.maxX);
+    const int minCellY = cellCoordinate(e.minY);
+    const int maxCellY = cellCoordinate(e.maxY);
+    const auto width = static_cast<std::size_t>(maxCellX - minCellX + 1);
+    const auto height = static_cast<std::size_t>(maxCellY - minCellY + 1);
+    occupied.reserve(width * height);
+
+    for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
+        for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
+            SpatialCell cell{cellX, cellY};
+            auto& bucket = m_cells[cell];
+            if (std::find(bucket.begin(), bucket.end(), primitiveIndex) == bucket.end()) {
+                bucket.push_back(primitiveIndex);
+            }
+            occupied.push_back(cell);
+        }
+    }
+    ++m_generation;
 }
 
 std::vector<std::size_t> SpatialHash::queryRegion(
