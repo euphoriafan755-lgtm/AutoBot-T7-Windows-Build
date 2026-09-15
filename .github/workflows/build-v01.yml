@@ -18,88 +18,209 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Record runner toolchain before build
+      - name: Initialize diagnostics
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ci-logs | Out-Null
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+
+          "NOT_RUN" | Set-Content ci-logs/configure-exit-code.txt
+          "NOT_RUN" | Set-Content ci-logs/build-exit-code.txt
+          "Configure has not run yet." | Set-Content ci-logs/configure.log
+          "Build has not run yet." | Set-Content ci-logs/build.log
+
           "OS=$([System.Environment]::OSVersion.VersionString)" | Tee-Object -FilePath ci-logs/toolchain.txt
           "RUNNER_OS=$env:RUNNER_OS" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           "RUNNER_ARCH=$env:RUNNER_ARCH" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          "GITHUB_SHA=$env:GITHUB_SHA" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          "GITHUB_RUN_ID=$env:GITHUB_RUN_ID" | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           cmake --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           clang --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           clang++ --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
           Get-Content mod.json | Tee-Object -FilePath ci-logs/mod-json.txt
 
-      - name: Build real Geode mod
-        id: geode_build
-        continue-on-error: true
-        uses: geode-sdk/build-geode-mod@e26ece68d56a3cfa0a7f790d8120c965008c3d08
+      # Keep the same Windows/Win64 build environment used by
+      # geode-sdk/build-geode-mod@e26ece68d56a3cfa0a7f790d8120c965008c3d08,
+      # but run configure/build explicitly so stdout+stderr can be retained.
+      - name: Setup sccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          sdk: given
-          cli: v3.7.4
-          target: Win64
-          build-config: Release
-          use-lto: false
-          # The action invokes CMake from Git Bash. GNU-style Clang flags avoid
-          # MSYS interpreting MSVC-style /W4 as a filesystem path.
-          configure-args: '-DCMAKE_CXX_FLAGS=-Wall\ -Wextra'
+          variant: sccache
+          key: win-v1
 
-      - name: Collect build products and metadata
+      - name: Setup CPM cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/cpm-cache
+          key: cpm-win-v1-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
+          restore-keys: |
+            cpm-win-v1-
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          curl -L https://github.com/ninja-build/ninja/releases/latest/download/ninja-win.zip -o ninja.zip
+          7z x ninja.zip -o"$GITHUB_WORKSPACE/ninja"
+          echo "$GITHUB_WORKSPACE/ninja" >> "$GITHUB_PATH"
+
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+        with:
+          version: v3.7.4
+
+      - name: Setup Geode SDK 5.10.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CLI_PROFILE="${{ github.workspace }}/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods"
+          mkdir -p "$CLI_PROFILE/Contents/geode/mods"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win
+
+          geode sdk install "${{ github.workspace }}/geode-sdk-clone"
+          export GEODE_SDK="${{ github.workspace }}/geode-sdk-clone"
+          echo "GEODE_SDK=$GEODE_SDK" >> "$GITHUB_ENV"
+
+          TARGET_GEODE_VERSION=$(jq -r '.geode' mod.json)
+          echo "Updating SDK to version $TARGET_GEODE_VERSION"
+          geode sdk update "$TARGET_GEODE_VERSION"
+          geode sdk install-binaries --platform win --version "$TARGET_GEODE_VERSION"
+
+          export CPM_CACHE="${{ github.workspace }}/cpm-cache"
+          echo "CPM_SOURCE_CACHE=$CPM_CACHE" >> "$GITHUB_ENV"
+
+      - name: Record prepared toolchain
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "--- prepared toolchain ---"
+            cmake --version || true
+            clang --version || true
+            clang++ --version || true
+            ninja --version || true
+            geode --version || true
+            sccache --version || true
+            echo "GEODE_SDK=${GEODE_SDK:-UNSET}"
+            echo "CPM_SOURCE_CACHE=${CPM_SOURCE_CACHE:-UNSET}"
+          } 2>&1 | tee -a ci-logs/toolchain.txt
+
+      - name: Configure and build with full diagnostics
+        id: captured_build
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$HOME/.cache" ci-logs ci-artifacts
+
+          SCCACHE_PATH="$(which sccache 2>/dev/null)"
+          CMAKE_EXTRA_ARGS=()
+          if [ -n "$SCCACHE_PATH" ]; then
+            CMAKE_EXTRA_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=$SCCACHE_PATH")
+            CMAKE_EXTRA_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_PATH")
+          fi
+
+          echo "=== REAL GEODE CONFIGURE ===" | tee ci-logs/configure.log
+          echo "Target: Win64" | tee -a ci-logs/configure.log
+          echo "Configuration: Release" | tee -a ci-logs/configure.log
+          echo "Warnings: -Wall -Wextra" | tee -a ci-logs/configure.log
+          echo "GEODE_SDK=${GEODE_SDK:-UNSET}" | tee -a ci-logs/configure.log
+
+          cmake \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            '-DGEODE_CODEGEN_CMAKE_ARGS=-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja' \
+            -G Ninja \
+            "${CMAKE_EXTRA_ARGS[@]}" \
+            -DGEODE_DONT_INSTALL_MODS=ON \
+            -DGEODE_TARGET_PLATFORM=Win64 \
+            '-DCMAKE_CXX_FLAGS=-Wall -Wextra' \
+            2>&1 | tee -a ci-logs/configure.log
+          CONFIGURE_CODE=${PIPESTATUS[0]}
+          echo "$CONFIGURE_CODE" > ci-logs/configure-exit-code.txt
+          echo "CONFIGURE_EXIT_CODE=$CONFIGURE_CODE" | tee -a ci-logs/configure.log
+
+          BUILD_CODE=NOT_RUN
+          if [ "$CONFIGURE_CODE" -eq 0 ]; then
+            echo "=== REAL GEODE BUILD ===" | tee ci-logs/build.log
+            cmake --build build --config Release --verbose --parallel 2>&1 | tee -a ci-logs/build.log
+            BUILD_CODE=${PIPESTATUS[0]}
+            echo "$BUILD_CODE" > ci-logs/build-exit-code.txt
+            echo "BUILD_EXIT_CODE=$BUILD_CODE" | tee -a ci-logs/build.log
+          else
+            echo "Build skipped because configure failed with exit code $CONFIGURE_CODE." | tee ci-logs/build.log
+            echo "NOT_RUN" > ci-logs/build-exit-code.txt
+          fi
+
+          # Preserve CMake/Geode diagnostic files without changing the build result.
+          if [ -d build ]; then
+            find build -type f -print 2>&1 | sort > ci-logs/build-files.txt
+            mkdir -p ci-logs/cmake
+            while IFS= read -r file; do
+              rel="${file#build/}"
+              safe="${rel//\//__}"
+              cp "$file" "ci-logs/cmake/$safe" 2>/dev/null || true
+            done < <(find build -type f \( -name '*.log' -o -name 'CMakeConfigureLog.yaml' -o -name 'CMakeError.log' -o -name 'CMakeOutput.log' \) -print)
+          else
+            echo "build directory not created" > ci-logs/build-files.txt
+          fi
+
+          # Preserve a package if this build unexpectedly gets all the way through.
+          mapfile -t GEODE_FILES < <(find build -type f -name '*.geode' -print 2>/dev/null)
+          if [ "${#GEODE_FILES[@]}" -gt 0 ]; then
+            SELECTED="${GEODE_FILES[0]}"
+            cp "$SELECTED" ci-artifacts/AutoBot-T7-v0.1.geode
+            sha256sum ci-artifacts/AutoBot-T7-v0.1.geode > ci-artifacts/SHA256SUMS.txt
+          fi
+
+          # This step deliberately exits zero so artifacts are guaranteed to upload.
+          # The final gate below restores the true workflow failure state.
+          exit 0
+
+      - name: Prepare diagnostics artifact
         if: always()
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
-          New-Item -ItemType Directory -Force ci-logs | Out-Null
-
-          "BUILD_ACTION_OUTCOME=${{ steps.geode_build.outcome }}" | Tee-Object -FilePath ci-logs/build-outcome.txt
-          "GEODE_VERSION=5.10.1" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
-          "GD_TARGET=2.2081" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
-          "CONFIGURATION=Release" | Tee-Object -FilePath ci-logs/build-outcome.txt -Append
-
-          if (Get-Command geode -ErrorAction SilentlyContinue) {
-            geode --version 2>&1 | Tee-Object -FilePath ci-logs/toolchain.txt -Append
+          New-Item -ItemType Directory -Force ci-artifacts/ci-logs | Out-Null
+          Copy-Item ci-logs/* ci-artifacts/ci-logs/ -Recurse -Force
+          if (Test-Path BUILD-REPORT.txt) {
+            Copy-Item BUILD-REPORT.txt ci-artifacts/BUILD-REPORT-source.txt -Force
           }
 
-          if (Test-Path build) {
-            Get-ChildItem build -Recurse -File | Select-Object FullName,Length | Format-Table -AutoSize | Out-String -Width 4096 | Set-Content ci-logs/build-files.txt
-          } else {
-            "build directory not created" | Set-Content ci-logs/build-files.txt
-          }
-
-          $geodeFiles = @(Get-ChildItem -Path . -Recurse -Filter *.geode -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\.git\\' })
-          if ($geodeFiles.Count -gt 0) {
-            $selected = $geodeFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            Copy-Item $selected.FullName ci-artifacts/AutoBot-T7-v0.1.geode -Force
-            $hash = (Get-FileHash ci-artifacts/AutoBot-T7-v0.1.geode -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  AutoBot-T7-v0.1.geode" | Set-Content ci-artifacts/SHA256SUMS.txt
-            "PACKAGE_FOUND=$($selected.FullName)" | Add-Content ci-logs/build-outcome.txt
-            "PACKAGE_SIZE=$((Get-Item ci-artifacts/AutoBot-T7-v0.1.geode).Length)" | Add-Content ci-logs/build-outcome.txt
-            "PACKAGE_SHA256=$hash" | Add-Content ci-logs/build-outcome.txt
-          } else {
-            "PACKAGE_FOUND=NO" | Add-Content ci-logs/build-outcome.txt
-          }
-
-          Copy-Item BUILD-REPORT.txt ci-artifacts/BUILD-REPORT-source.txt -Force
-          Copy-Item ci-logs ci-artifacts/ci-logs -Recurse -Force
-
-      - name: Upload build artifacts and diagnostics
+      - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-v0.1-build
+          name: AutoBot-T7-v0.1-diagnostics
           path: ci-artifacts/
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      - name: Enforce build gate
+      - name: Enforce real build gate
         if: always()
         shell: pwsh
         run: |
-          if ("${{ steps.geode_build.outcome }}" -ne "success") {
-            Write-Error "REAL GEODE BUILD GATE FAILED"
+          $configureCode = (Get-Content ci-logs/configure-exit-code.txt -Raw).Trim()
+          $buildCode = (Get-Content ci-logs/build-exit-code.txt -Raw).Trim()
+
+          Write-Host "CONFIGURE_EXIT_CODE=$configureCode"
+          Write-Host "BUILD_EXIT_CODE=$buildCode"
+
+          if ($configureCode -ne "0") {
+            Write-Error "REAL GEODE CONFIGURE = FAIL"
+            exit 1
+          }
+          if ($buildCode -ne "0") {
+            Write-Error "REAL GEODE COMPILE/LINK/PACKAGE = FAIL"
             exit 1
           }
           if (-not (Test-Path ci-artifacts/AutoBot-T7-v0.1.geode)) {
-            Write-Error "Build action succeeded but no .geode package was found"
+            Write-Error "Build returned zero but no .geode package was found"
             exit 1
           }
-          Write-Host "REAL GEODE CONFIGURE/COMPILE/LINK/PACKAGE GATE PASSED"
+
+          Write-Host "REAL GEODE CONFIGURE = PASS"
+          Write-Host "REAL C++ COMPILE = PASS"
+          Write-Host "REAL LINK = PASS"
+          Write-Host "REAL .GEODE PACKAGE = PASS"
