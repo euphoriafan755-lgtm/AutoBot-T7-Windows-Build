@@ -51,6 +51,37 @@ double elapsedMs(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+bool nearlyEqual(float a, float b, float epsilon = 0.0005f) {
+    return std::abs(a - b) <= epsilon;
+}
+
+bool sameRect(WorldRect const& a, WorldRect const& b) {
+    return nearlyEqual(a.x, b.x)
+        && nearlyEqual(a.y, b.y)
+        && nearlyEqual(a.width, b.width)
+        && nearlyEqual(a.height, b.height);
+}
+
+bool samePrimitiveState(CollisionPrimitive const& a, CollisionPrimitive const& b) {
+    return sameRect(a.objectBounds, b.objectBounds)
+        && nearlyEqual(a.x, b.x)
+        && nearlyEqual(a.y, b.y)
+        && nearlyEqual(a.nodeX, b.nodeX)
+        && nearlyEqual(a.nodeY, b.nodeY)
+        && nearlyEqual(a.rotation, b.rotation)
+        && nearlyEqual(a.rotationX, b.rotationX)
+        && nearlyEqual(a.rotationY, b.rotationY)
+        && nearlyEqual(a.scaleX, b.scaleX)
+        && nearlyEqual(a.scaleY, b.scaleY)
+        && a.flipX == b.flipX
+        && a.flipY == b.flipY
+        && a.noTouch == b.noTouch
+        && a.passable == b.passable
+        && a.groupDisabled == b.groupDisabled
+        && a.enabled == b.enabled
+        && a.indexable == b.indexable;
+}
+
 double percentile(std::vector<double> const& values, double fraction) {
     if (values.empty()) return 0.0;
     const auto index = static_cast<std::size_t>(
@@ -64,6 +95,7 @@ double percentile(std::vector<double> const& values, double fraction) {
 CollisionPrimitive CollisionWorld::makePrimitive(WorldObject const& object, std::size_t sourceIndex) {
     CollisionPrimitive primitive{};
     primitive.sourceIndex = sourceIndex;
+    primitive.playLayerObjectIndex = object.playLayerObjectIndex;
     primitive.sourceUniqueID = object.uniqueID;
     primitive.objectID = object.objectID;
     primitive.rawGameObjectType = object.rawGameObjectType;
@@ -92,13 +124,12 @@ CollisionPrimitive CollisionWorld::makePrimitive(WorldObject const& object, std:
     primitive.noTouch = object.noTouch;
     primitive.passable = object.passable;
     primitive.groupDisabled = object.groupDisabled;
-    primitive.enabled = object.enabled;
+    primitive.enabled = object.enabled && !object.groupDisabled;
     primitive.slope = object.slope;
+    primitive.groupCount = object.groupCount;
+    primitive.potentiallyDynamic = object.groupCount > 0;
 
-    // getObjectRect() is an OBJECT BOUND / broad-phase bound. The previous
-    // build rotated that rect again and fabricated slope triangles, which can
-    // double-apply/guess transforms. This gate now draws/indexes the copied
-    // bound only and keeps exact gameplay geometry explicitly NOT VERIFIED.
+    // getObjectRect() remains an OBJECT BOUND / broad-phase bound only.
     if (object.type == GameplayObjectType::Solid) {
         primitive.shape = object.slope
             ? CollisionShapeKind::SlopeBounds
@@ -123,9 +154,7 @@ CollisionPrimitive CollisionWorld::makePrimitive(WorldObject const& object, std:
         primitive.geometryVerification = GeometryVerification::NotSupported;
     }
 
-    // NoTouch disables collision/interaction. Keep ownership for diagnostics,
-    // but do not insert that object into the collision SpatialHash.
-    primitive.indexable = object.enabled
+    primitive.indexable = primitive.enabled
         && primitive.participation != CollisionParticipation::ExcludedNoTouch;
 
     return primitive;
@@ -237,6 +266,7 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
     m_primitives.clear();
     m_spatialHash.clear();
     m_sourceToPrimitive.clear();
+    m_dynamicWatchPrimitiveIndices.clear();
     m_audit.clear();
     m_rawAudit.clear();
     m_metrics = {};
@@ -263,10 +293,6 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
             ++consistency.intentionallySkipped;
             continue;
         }
-        if (!object.enabled) {
-            ++consistency.intentionallySkipped;
-            continue;
-        }
 
         auto primitive = makePrimitive(object, sourceIndex);
         const auto primitiveIndex = m_primitives.size();
@@ -274,12 +300,15 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
         m_primitives.push_back(primitive);
         ++consistency.colliderCreated;
 
-        if (collisionSurface(primitive.classification)) {
-            if (primitive.participation == CollisionParticipation::CollisionSurface) {
-                ++m_metrics.collisionCandidates;
-            } else {
-                ++consistency.intentionallySkipped;
-            }
+        if (primitive.potentiallyDynamic) {
+            m_dynamicWatchPrimitiveIndices.push_back(primitiveIndex);
+        }
+        if (!primitive.indexable) {
+            ++consistency.intentionallySkipped;
+        }
+
+        if (collisionSurface(primitive.classification) && primitive.indexable) {
+            ++m_metrics.collisionCandidates;
         }
 
         if (primitive.geometryVerification == GeometryVerification::NotVerified) {
@@ -292,9 +321,6 @@ bool CollisionWorld::build(StaticWorld const& source, double parseTimeMs) {
     const auto primitiveEnd = Clock::now();
     m_metrics.primitiveBuildTimeMs = elapsedMs(primitiveStart, primitiveEnd);
 
-    // Build-order invariant: finalize storage first, then index stable numeric
-    // primitive indices. SpatialHash never keeps pointers/references into the
-    // vector, so later vector reallocations cannot corrupt ownership.
     const auto hashStart = Clock::now();
     m_spatialHash.build(m_primitives);
     const auto hashEnd = Clock::now();
@@ -370,6 +396,44 @@ CollisionQueryResult CollisionWorld::queryAhead(
         normalizedHeight,
     };
     return queryRegion(region);
+}
+
+bool CollisionWorld::updatePrimitiveFromWorldObject(
+    std::size_t sourceIndex,
+    WorldObject const& liveObject,
+    bool& reindexed
+) {
+    reindexed = false;
+    if (!m_ready || sourceIndex >= m_sourceToPrimitive.size()) return false;
+
+    const auto primitiveIndex = m_sourceToPrimitive[sourceIndex];
+    if (primitiveIndex == kInvalidPrimitiveIndex || primitiveIndex >= m_primitives.size()) {
+        return false;
+    }
+
+    const bool wasIndexed = m_spatialHash.contains(primitiveIndex);
+    auto const previous = m_primitives[primitiveIndex];
+    auto updated = makePrimitive(liveObject, sourceIndex);
+    updated.observedDynamic = previous.observedDynamic;
+
+    const bool changed = !samePrimitiveState(previous, updated);
+    if (!changed) return false;
+
+    const bool broadphaseChanged = !sameRect(previous.broadphaseBounds, updated.broadphaseBounds)
+        || previous.indexable != updated.indexable
+        || previous.enabled != updated.enabled;
+
+    updated.observedDynamic = true;
+    m_primitives[primitiveIndex] = updated;
+    if (broadphaseChanged) {
+        m_spatialHash.refreshPrimitive(primitiveIndex, m_primitives[primitiveIndex]);
+        reindexed = true;
+        const bool isIndexed = m_spatialHash.contains(primitiveIndex);
+        if (!wasIndexed && isIndexed) ++m_metrics.indexedObjects;
+        else if (wasIndexed && !isIndexed && m_metrics.indexedObjects > 0) --m_metrics.indexedObjects;
+        m_metrics.spatialCells = m_spatialHash.cellCount();
+    }
+    return true;
 }
 
 std::size_t CollisionWorld::primitiveForSource(std::size_t sourceIndex) const {
