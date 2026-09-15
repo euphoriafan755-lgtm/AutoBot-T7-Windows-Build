@@ -15,6 +15,7 @@ public:
 
     void clear();
     void build(std::vector<CollisionPrimitive> const& primitives);
+    void refreshPrimitive(std::size_t primitiveIndex, CollisionPrimitive const& primitive);
 
     [[nodiscard]] std::vector<std::size_t> queryRegion(
         WorldRect const& region,
@@ -32,6 +33,7 @@ public:
 
     [[nodiscard]] float cellSize() const { return m_cellSize; }
     [[nodiscard]] std::size_t cellCount() const { return m_cells.size(); }
+    [[nodiscard]] std::uint64_t generation() const { return m_generation; }
 
 private:
     struct CellKeyHash {
@@ -43,6 +45,7 @@ private:
     float m_cellSize = 120.0f;
     std::unordered_map<SpatialCell, std::vector<std::size_t>, CellKeyHash> m_cells;
     std::vector<std::vector<SpatialCell>> m_objectCells;
+    std::uint64_t m_generation = 0;
 };
 
 } // namespace autobot::world
