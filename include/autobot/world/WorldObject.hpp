@@ -36,6 +36,7 @@ struct WorldObject {
     // remains the canonical in-memory identity for this parse.
     int objectID = 0;
     int uniqueID = 0;
+    std::size_t playLayerObjectIndex = 0;
     int rawGameObjectType = -1;
     GameplayObjectType type = GameplayObjectType::Unknown;
     V01Support v01Support = V01Support::NotSupported;
@@ -69,6 +70,7 @@ struct WorldObject {
     bool flipX = false;
     bool flipY = false;
     bool slope = false;
+    int groupCount = 0;
 };
 
 struct StaticWorld {
