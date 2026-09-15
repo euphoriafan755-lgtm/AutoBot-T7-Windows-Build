@@ -1,0 +1,7 @@
+build/
+.geode/
+*.geode
+*.dll
+*.pdb
+*.exp
+*.lib
