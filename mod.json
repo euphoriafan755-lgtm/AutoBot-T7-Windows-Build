@@ -1,0 +1,11 @@
+{
+  "geode": "5.10.1",
+  "gd": {
+    "win": "2.2081"
+  },
+  "id": "thiago7tv.autobot-t7",
+  "name": "AutoBot T7",
+  "version": "0.1.0",
+  "developer": "Thiago7TV",
+  "description": "AutoBot T7 V0.1 Zero-Shot Core: direct game-state reading and initial level parsing for Cube-only development."
+}
