@@ -1,0 +1,79 @@
+AutoBot T7 V0.1 — Zero-Shot Core
+First implementation delivery build report
+Date: 2026-09-15
+
+TARGET
+- Geometry Dash: 2.2081 (Windows target in mod.json)
+- Geode: 5.10.1
+- C++ standard: C++23
+
+FILES IMPLEMENTED
+- CMakeLists.txt
+- mod.json
+- README.md
+- include/autobot/core/GameSnapshot.hpp
+- include/autobot/core/GameStateReader.hpp
+- include/autobot/world/WorldObject.hpp
+- include/autobot/world/LevelParser.hpp
+- include/autobot/ui/DiagnosticHUD.hpp
+- src/core/GameStateReader.cpp
+- src/world/LevelParser.cpp
+- src/ui/DiagnosticHUD.cpp
+- src/hooks/GameLayerHook.cpp
+- src/main.cpp
+
+LOCAL VERIFICATION PERFORMED
+1) mod.json validation
+   COMMAND: python3 -m json.tool mod.json
+   RESULT: PASS
+
+2) Pure C++ foundation header syntax
+   COMMAND: clang++ -std=c++23 -Wall -Wextra -pedantic -Iinclude -fsyntax-only <temporary TU>
+   HEADERS: GameSnapshot.hpp + WorldObject.hpp
+   RESULT: PASS
+
+3) Real CMake configure attempt
+   COMMAND: cmake -S . -B build
+   RESULT: BLOCKED / NOT COMPILED
+   EXACT ERROR:
+     CMake Error at CMakeLists.txt:21 (message):
+       Geode SDK not found. Set GEODE_SDK or the GEODE_SDK environment variable.
+
+   The current execution environment has no Geode SDK and no geode CLI installed.
+   Because configuration stops before Geode is available, Geode-bound translation units
+   were NOT compiled and no .geode package was produced.
+
+RUNTIME
+- Geometry Dash was NOT available/executed in this environment.
+- Diagnostic HUD: NOT RUNTIME VERIFIED.
+- GameStateReader values: NOT RUNTIME VERIFIED.
+- LevelParser classifications: NOT RUNTIME VERIFIED.
+- Exact game/physics tick source: NOT VERIFIED. The current field is explicitly a
+  GJBaseGameLayer::postUpdate sample sequence and is labeled as such in the HUD.
+
+SCOPE IMPLEMENTED IN THIS DELIVERY
+- Real Geode project skeleton
+- PlayerState / GameSnapshot
+- Direct GameStateReader plumbing
+- Diagnostic HUD plumbing
+- Initial runtime LevelParser from PlayLayer::m_objects
+- Independent WorldObject / StaticWorld copies
+- V0.1 support marking for parsed gameplay objects
+
+NOT IMPLEMENTED IN THIS DELIVERY
+- Spatial hash collision world
+- Physics validation harness
+- Cube physics simulator
+- Trajectory generation
+- Show Trajectory
+- Search / planner
+- Realtime replanning
+- InputController
+- AttemptBudgetManager
+- FailureAnalyzer
+
+NO CLAIMS
+- No claim that the Geode mod compiled.
+- No claim that Geometry Dash was tested.
+- No claim that current object classification is sufficient for simulation.
+- No claim that postUpdate sequence equals Geometry Dash's exact physics tick.
