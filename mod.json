@@ -7,5 +7,13 @@
   "name": "AutoBot T7",
   "version": "0.1.0",
   "developer": "Thiago7TV",
-  "description": "AutoBot T7 V0.1 Zero-Shot Core: direct game-state reading and initial level parsing for Cube-only development."
+  "description": "AutoBot T7 V0.1 Zero-Shot Core: runtime-verified state reading plus Collision World diagnostics.",
+  "settings": {
+    "collision-debug-overlay": {
+      "type": "bool",
+      "name": "Collision Debug Overlay",
+      "description": "Temporary Collision World diagnostics. Draws nearby broad-phase collision candidates and query metrics. Gameplay hitboxes remain NOT VERIFIED until runtime validation.",
+      "default": true
+    }
+  }
 }
