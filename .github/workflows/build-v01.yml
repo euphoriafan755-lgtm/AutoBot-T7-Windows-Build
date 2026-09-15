@@ -13,10 +13,6 @@ jobs:
   build-windows:
     name: Windows / GD 2.2081 / Geode 5.10.1
     runs-on: windows-latest
-    env:
-      # Git Bash otherwise rewrites /W4 into C:/Program Files/Git/W4 before
-      # CMake sees it. This preserves the intended clang-cl/MSVC warning flag.
-      MSYS2_ARG_CONV_EXCL: /W4
 
     steps:
       - name: Checkout source
@@ -44,7 +40,9 @@ jobs:
           target: Win64
           build-config: Release
           use-lto: false
-          configure-args: '-DCMAKE_CXX_FLAGS=/W4'
+          # The action invokes CMake from Git Bash. GNU-style Clang flags avoid
+          # MSYS interpreting MSVC-style /W4 as a filesystem path.
+          configure-args: '-DCMAKE_CXX_FLAGS=-Wall\ -Wextra'
 
       - name: Collect build products and metadata
         if: always()
