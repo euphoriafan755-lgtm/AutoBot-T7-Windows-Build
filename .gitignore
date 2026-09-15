@@ -1,7 +1,5 @@
 build/
 .geode/
-*.geode
-*.dll
-*.pdb
-*.exp
-*.lib
+.vscode/
+.DS_Store
+*.user
