@@ -7,7 +7,7 @@
   "name": "AutoBot T7",
   "version": "0.1.0",
   "developer": "Thiago7TV",
-  "description": "AutoBot T7 V0.1 Zero-Shot Core: runtime-verified state reading plus Collision World audit diagnostics.",
+  "description": "AutoBot T7 V0.1: runtime Collision World fixes plus autonomous Cube test driver.",
   "settings": {
     "collision-debug-overlay": {
       "type": "bool",
@@ -26,6 +26,18 @@
       "name": "Collision Object Labels",
       "description": "When Collision Trace Debug is enabled, labels nearby objects with source index, object ID, raw GameObjectType and final classification.",
       "default": false
+    },
+    "collision-debug-full-world": {
+      "type": "bool",
+      "name": "Collision Debug Draw Mode - FULL WORLD",
+      "description": "Diagnostic only. OFF = QUERY ONLY. ON = draw CollisionWorld objects visible by the camera using a brute-force camera-region scan, independent of SpatialHash/queryRegion.",
+      "default": false
+    },
+    "autobot-enabled": {
+      "type": "bool",
+      "name": "AutoBot Autonomous Test Driver",
+      "description": "Lets AutoBot own Cube input using live GameState + CollisionWorld queries. Unsupported modes stop control safely. This is a test driver, not the full planner.",
+      "default": true
     }
   }
 }
