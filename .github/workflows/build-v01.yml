@@ -26,6 +26,7 @@ jobs:
           "NOT_RUN" | Set-Content ci-logs/configure-exit-code.txt
           "NOT_RUN" | Set-Content ci-logs/build-exit-code.txt
           "NOT_RUN" | Set-Content ci-logs/static-tests-result.txt
+          "NOT_RUN" | Set-Content ci-logs/general-solver-result.txt
           "Configure has not run yet." | Set-Content ci-logs/configure.log
           "Build has not run yet." | Set-Content ci-logs/build.log
           "OS=$([System.Environment]::OSVersion.VersionString)" | Tee-Object -FilePath ci-logs/toolchain.txt
@@ -119,6 +120,7 @@ jobs:
           mkdir -p ci-tests ci-logs
           : > ci-logs/static-tests.log
           echo "NOT_RUN" > ci-logs/static-tests-result.txt
+          echo "NOT_RUN" > ci-logs/general-solver-result.txt
           run_test() {
             local name="$1"
             shift
@@ -133,6 +135,9 @@ jobs:
           run_test DYNAMIC_COLLIDER_SYNC ./ci-tests/dynamic.exe
           clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/InputControllerStateMachineTest.cpp -o ci-tests/input.exe
           run_test INPUT_CONTROLLER_STATE_MACHINE ./ci-tests/input.exe
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/GeneralSolverInvariantTest.cpp src/solver/ActionGenerator.cpp src/solver/PhysicsModels.cpp src/solver/TrajectoryScorer.cpp -o ci-tests/general-solver.exe
+          run_test GENERAL_SOLVER_INVARIANTS ./ci-tests/general-solver.exe
+          echo "PASS" > ci-logs/general-solver-result.txt
           echo "PASS" > ci-logs/static-tests-result.txt
 
       - name: Configure and build with full diagnostics
@@ -160,7 +165,7 @@ jobs:
           BUILD_CODE=NOT_RUN
           if [ "$CONFIGURE_CODE" -eq 0 ]; then
             echo "=== REAL GEODE BUILD ===" | tee ci-logs/build.log
-            cmake --build build --config Release --verbose --parallel 2>&1 | tee -a ci-logs/build.log
+            cmake --build build --config Release --verbose --parallel 2 2>&1 | tee -a ci-logs/build.log
             BUILD_CODE=${PIPESTATUS[0]}
             echo "$BUILD_CODE" > ci-logs/build-exit-code.txt
             echo "BUILD_EXIT_CODE=$BUILD_CODE" | tee -a ci-logs/build.log
@@ -200,6 +205,7 @@ jobs:
           CONFIGURE_CODE="$(tr -d '\r\n ' < ci-logs/configure-exit-code.txt 2>/dev/null)"
           BUILD_CODE="$(tr -d '\r\n ' < ci-logs/build-exit-code.txt 2>/dev/null)"
           STATIC_TEST_RESULT="$(tr -d '\r\n ' < ci-logs/static-tests-result.txt 2>/dev/null)"
+          GENERAL_SOLVER_RESULT="$(tr -d '\r\n ' < ci-logs/general-solver-result.txt 2>/dev/null)"
           GEODE_FILE="ci-artifacts/AutoBot-T7-v0.1.geode"
           SOURCE_FILE="ci-artifacts/AutoBot-T7-v0.1-source.zip"
           GEODE_EXISTS=FAIL; SOURCE_EXISTS=FAIL; PACKAGE_LOG_RESULT=FAIL; LINK_RESULT=FAIL
@@ -224,9 +230,9 @@ jobs:
           GD_TARGET_VERSION="$(jq -r '.gd.win' mod.json 2>/dev/null)"
           cat > ci-artifacts/BUILD-REPORT.txt <<EOF
           AUTOBOT T7 V0.1
-          COLLISION WORLD FIX + AUTONOMOUS TEST DRIVER BUILD
+          GENERAL SOLVER BUILD
 
-          GITHUB SHA: $GITHUB_SHA
+          FINAL COMMIT: $GITHUB_SHA
           RUN ID: $GITHUB_RUN_ID
           BUILD_COMMIT=$BUILD_COMMIT
           SOURCE_ARCHIVE_COMMIT=$SOURCE_ARCHIVE_COMMIT
@@ -241,9 +247,10 @@ jobs:
           GD TARGET VERSION: $GD_TARGET_VERSION
           CONFIGURATION: Release / Win64
 
+          STATIC INVARIANTS RESULT: $STATIC_TEST_RESULT
+          GENERAL_SOLVER_INVARIANTS: $GENERAL_SOLVER_RESULT
           CONFIGURE EXIT CODE: $CONFIGURE_CODE
           BUILD EXIT CODE: $BUILD_CODE
-          STATIC INVARIANTS RESULT: $STATIC_TEST_RESULT
           CONFIGURE RESULT: $CONFIGURE_RESULT
           COMPILE RESULT: $COMPILE_RESULT
           LINK RESULT: $LINK_RESULT
@@ -259,14 +266,28 @@ jobs:
           CHECKOUT COMMIT MATCH = $CHECKOUT_MATCH
           SOURCE / BINARY COMMIT MATCH = $SOURCE_BINARY_MATCH
 
-          LIFECYCLE SOURCE FIX = COMPILED IF BUILD PASS; RUNTIME PENDING
-          DYNAMIC COLLIDER SYNC = COMPILED IF BUILD PASS; RUNTIME PENDING
-          FULL WORLD DEBUG = COMPILED IF BUILD PASS; RUNTIME PENDING
-          MODE TRANSITION TRACE = COMPILED IF BUILD PASS; RUNTIME PENDING
-          INPUT CONTROLLER = COMPILED IF BUILD PASS; RUNTIME PENDING
-          AUTONOMOUS TEST DRIVER = COMPILED IF BUILD PASS; RUNTIME PENDING
+          CubePhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          ShipPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          BallPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          UfoPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          WavePhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          RobotPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          SpiderPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          SwingPhysicsModel = COMPILED IF BUILD PASS; RUNTIME PENDING
+          PhysicsValidationHarness = COMPILED IF BUILD PASS; RUNTIME PENDING
+          LocalWorldView = COMPILED IF BUILD PASS; RUNTIME PENDING
+          PortalTransitionResolver = COMPILED IF BUILD PASS; RUNTIME PENDING
+          ModeActionGenerator = COMPILED IF BUILD PASS; RUNTIME PENDING
+          TrajectorySimulator = COMPILED IF BUILD PASS; RUNTIME PENDING
+          TrajectoryScorer = COMPILED IF BUILD PASS; RUNTIME PENDING
+          RealtimePlanner = COMPILED IF BUILD PASS; RUNTIME PENDING
+          ShowTrajectoryOverlay = COMPILED IF BUILD PASS; RUNTIME PENDING
+          InputController = COMPILED IF BUILD PASS; RUNTIME PENDING
+          AutonomousTestDriver = COMPILED IF BUILD PASS; RUNTIME PENDING
+
           EXACT GAMEPLAY HITBOX ACCURACY: NOT VERIFIED
-          COLLISION WORLD GATE: FAILED / NOT PASSED YET
+          FULL TRIGGER SUPPORT: NOT CLAIMED
+          RUNTIME GENERAL SOLVER = PENDING USER TEST
           EOF
           ( cd ci-artifacts; : > SHA256SUMS.txt; [ -s AutoBot-T7-v0.1.geode ] && sha256sum AutoBot-T7-v0.1.geode >> SHA256SUMS.txt; [ -s AutoBot-T7-v0.1-source.zip ] && sha256sum AutoBot-T7-v0.1-source.zip >> SHA256SUMS.txt; [ -s BUILD-REPORT.txt ] && sha256sum BUILD-REPORT.txt >> SHA256SUMS.txt )
           echo "ARCHIVE_EXIT_CODE=$ARCHIVE_CODE" > ci-logs/archive-exit-code.txt
@@ -294,6 +315,7 @@ jobs:
           $configureCode = (Get-Content ci-logs/configure-exit-code.txt -Raw).Trim()
           $buildCode = (Get-Content ci-logs/build-exit-code.txt -Raw).Trim()
           $staticTests = (Get-Content ci-logs/static-tests-result.txt -Raw).Trim()
+          $generalSolver = (Get-Content ci-logs/general-solver-result.txt -Raw).Trim()
           $archiveCode = (Get-Content ci-logs/archive-exit-code.txt -Raw).Trim().Split('=')[-1]
           $checkoutMatch = (Get-Content ci-logs/checkout-commit-match.txt -Raw).Trim().Split('=')[-1]
           $sourceBinaryMatch = (Get-Content ci-logs/source-binary-commit-match.txt -Raw).Trim().Split('=')[-1]
@@ -301,11 +323,13 @@ jobs:
           Write-Host "CONFIGURE_EXIT_CODE=$configureCode"
           Write-Host "BUILD_EXIT_CODE=$buildCode"
           Write-Host "STATIC_INVARIANTS=$staticTests"
+          Write-Host "GENERAL_SOLVER_INVARIANTS=$generalSolver"
           Write-Host "ARCHIVE_EXIT_CODE=$archiveCode"
           Write-Host "CHECKOUT_COMMIT_MATCH=$checkoutMatch"
           Write-Host "SOURCE_BINARY_COMMIT_MATCH=$sourceBinaryMatch"
           Write-Host "PACKAGE_LOG_CONFIRMATION=$packageLog"
           if ($staticTests -ne "PASS") { Write-Error "STATIC INVARIANTS = FAIL"; exit 1 }
+          if ($generalSolver -ne "PASS") { Write-Error "GENERAL_SOLVER_INVARIANTS = FAIL"; exit 1 }
           if ($configureCode -ne "0") { Write-Error "REAL GEODE CONFIGURE = FAIL"; exit 1 }
           if ($buildCode -ne "0") { Write-Error "REAL GEODE COMPILE/LINK/PACKAGE = FAIL"; exit 1 }
           if ($archiveCode -ne "0") { Write-Error "SOURCE ARCHIVE = FAIL"; exit 1 }
@@ -316,6 +340,7 @@ jobs:
           if ((Get-Item ci-artifacts/AutoBot-T7-v0.1.geode).Length -le 0) { Write-Error ".geode empty"; exit 1 }
           if (-not (Test-Path ci-artifacts/AutoBot-T7-v0.1-source.zip)) { Write-Error "source.zip missing"; exit 1 }
           if ((Get-Item ci-artifacts/AutoBot-T7-v0.1-source.zip).Length -le 0) { Write-Error "source.zip empty"; exit 1 }
+          Write-Host "GENERAL_SOLVER_INVARIANTS = PASS"
           Write-Host "REAL GEODE CONFIGURE = PASS"
           Write-Host "REAL C++ COMPILE = PASS"
           Write-Host "REAL LINK = PASS"
