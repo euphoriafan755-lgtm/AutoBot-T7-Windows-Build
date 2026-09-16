@@ -133,9 +133,13 @@ void PhysicsValidationHarness::recordPrediction(
     error.dvy = actual.player.velocityY - predicted.vy;
     error.modeMatched = actual.player.mode == predicted.mode;
     error.landingMatched = actual.player.grounded == predicted.grounded;
+    error.collisionMatched = (!actual.player.dead) == predicted.alive;
 
     m_stats.lastError = error;
-    const double magnitude = error.magnitude() + (error.modeMatched ? 0.0 : 100.0);
+    const double magnitude = error.magnitude()
+        + (error.modeMatched ? 0.0 : 100.0)
+        + (error.landingMatched ? 0.0 : 50.0)
+        + (error.collisionMatched ? 0.0 : 100.0);
     if (m_stats.errorEma == 0.0) m_stats.errorEma = magnitude;
     else m_stats.errorEma = m_stats.errorEma * 0.9 + magnitude * 0.1;
 }
