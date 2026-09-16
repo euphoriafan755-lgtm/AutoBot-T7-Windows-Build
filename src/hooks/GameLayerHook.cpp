@@ -4,9 +4,11 @@
 #include "autobot/control/AutonomousTestDriver.hpp"
 #include "autobot/control/InputController.hpp"
 #include "autobot/core/GameStateReader.hpp"
+#include "autobot/core/PerformanceMetrics.hpp"
 #include "autobot/ui/AutonomousHUD.hpp"
 #include "autobot/ui/CollisionDebugOverlay.hpp"
 #include "autobot/ui/DiagnosticHUD.hpp"
+#include "autobot/ui/ShowTrajectoryOverlay.hpp"
 #include "autobot/world/CollisionTrace.hpp"
 #include "autobot/world/CollisionWorld.hpp"
 #include "autobot/world/DynamicColliderSync.hpp"
@@ -18,6 +20,14 @@
 #include <optional>
 
 using namespace geode::prelude;
+
+namespace {
+using PerfClock = std::chrono::steady_clock;
+
+double elapsedMs(PerfClock::time_point start) {
+    return std::chrono::duration<double, std::milli>(PerfClock::now() - start).count();
+}
+}
 
 class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     struct Fields {
@@ -45,9 +55,11 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         autobot::ui::DiagnosticHUD hud{};
         autobot::ui::CollisionDebugOverlay collisionDebug{};
         autobot::ui::AutonomousHUD autonomousHUD{};
+        autobot::ui::ShowTrajectoryOverlay showTrajectory{};
 
         autobot::control::InputController inputController{};
         autobot::control::AutonomousTestDriver autonomousDriver{};
+        autobot::core::SolverPerformanceMetrics performance{};
     };
 
     bool buildWorldFromGameplayLifecycle() {
@@ -166,29 +178,39 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         if (!m_fields->autonomousHUD.attached() && !m_fields->autonomousHUD.attach(playLayer)) {
             log::warn("AutoBot T7: autonomous HUD could not be attached yet");
         }
+        if (!m_fields->showTrajectory.attached() && !m_fields->showTrajectory.attach(playLayer)) {
+            log::warn("AutoBot T7: Show Trajectory overlay could not be attached yet");
+        }
 
         const bool collisionDebugEnabled = Mod::get()->getSettingValue<bool>("collision-debug-overlay");
         const bool traceDebugEnabled = Mod::get()->getSettingValue<bool>("collision-trace-debug");
         const bool objectLabelsEnabled = Mod::get()->getSettingValue<bool>("collision-object-labels");
         const bool fullWorldDebug = Mod::get()->getSettingValue<bool>("collision-debug-full-world");
         const bool autobotEnabled = Mod::get()->getSettingValue<bool>("autobot-enabled");
+        const bool showTrajectoryEnabled = Mod::get()->getSettingValue<bool>("show-trajectory");
+        const bool solverDebugEnabled = Mod::get()->getSettingValue<bool>("solver-debug");
 
         m_fields->collisionDebug.setEnabled(collisionDebugEnabled);
         m_fields->collisionDebug.setObjectLabelsEnabled(
             collisionDebugEnabled && traceDebugEnabled && objectLabelsEnabled
         );
         m_fields->collisionDebug.setFullWorldEnabled(collisionDebugEnabled && fullWorldDebug);
+        m_fields->showTrajectory.setEnabled(showTrajectoryEnabled);
 
+        const auto stateReadStart = PerfClock::now();
         const auto snapshot = autobot::core::GameStateReader::capture(playLayer, m_fields->tick);
+        m_fields->performance.stateRead.add(elapsedMs(stateReadStart));
         m_fields->hud.update(snapshot, m_fields->world);
 
         autobot::world::DynamicSyncStats syncStats{};
         if (m_fields->collisionWorld.ready()) {
+            const auto worldSyncStart = PerfClock::now();
             syncStats = m_fields->dynamicSync.sync(
                 playLayer,
                 m_fields->world,
                 m_fields->collisionWorld
             );
+            m_fields->performance.worldSync.add(elapsedMs(worldSyncStart));
             if ((syncStats.changed > 0 || syncStats.identityMismatches > 0 || syncStats.readFailures > 0)
                 && (traceDebugEnabled || m_fields->tick % 60u == 0u)) {
                 log::info(
@@ -280,6 +302,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
 
         autobot::world::CollisionQueryResult query{};
         std::optional<autobot::world::CollisionTraceQuery> traceQuery;
+        const auto queryStart = PerfClock::now();
         if (m_fields->collisionWorld.ready() && snapshot.valid) {
             query = m_fields->collisionWorld.queryAhead(
                 static_cast<float>(snapshot.player.x),
@@ -297,13 +320,17 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                 );
             }
         }
+        m_fields->performance.query.add(elapsedMs(queryStart));
 
+        double debugOverlayMs = 0.0;
+        const auto collisionDebugStart = PerfClock::now();
         m_fields->collisionDebug.update(
             snapshot,
             m_fields->collisionWorld,
             query,
             traceQuery ? &*traceQuery : nullptr
         );
+        debugOverlayMs += elapsedMs(collisionDebugStart);
 
         if (traceQuery && (m_fields->tick % 30u == 0u)) {
             log::info(
@@ -336,7 +363,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         const double inputTimestamp = snapshot.valid
             ? snapshot.levelTime
             : m_gameState.m_levelTime;
-        m_fields->inputController.setBotControl(autobotEnabled, playLayer, inputTimestamp);
+
         auto decision = m_fields->autonomousDriver.decide(
             snapshot,
             m_fields->collisionWorld,
@@ -345,14 +372,97 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->inputController.botHolding()
         );
 
-        if (autobotEnabled) {
-            if (decision.ownership == autobot::control::InputOwnership::Bot) {
-                m_fields->inputController.setBotControl(true, playLayer, inputTimestamp);
-            }
+        m_fields->performance.candidateGeneration.add(decision.plan.candidateGenerationMs);
+        m_fields->performance.physicsSimulation.add(decision.plan.physicsSimulationMs);
+        m_fields->performance.trajectoryScoring.add(decision.plan.trajectoryScoringMs);
+        m_fields->performance.plannerTotal.add(decision.plan.plannerDurationMs);
+
+        constexpr double kPlannerBudgetMs = 8.0;
+        if (decision.plan.plannerDurationMs > kPlannerBudgetMs) {
+            log::warn(
+                "PLANNER DEADLINE MISSED tick={} durationMs={:.3f} budgetMs={:.3f} mode={}",
+                m_fields->tick,
+                decision.plan.plannerDurationMs,
+                kPlannerBudgetMs,
+                snapshot.valid ? core::toString(snapshot.player.mode) : "UNKNOWN"
+            );
+        }
+
+        auto const& modelError = decision.plan.lastModelError;
+        const bool modelDiverged = modelError.magnitude() > 25.0
+            || !modelError.modeMatched
+            || !modelError.landingMatched
+            || !modelError.collisionMatched;
+        if (modelDiverged && m_fields->autonomousDriver.validation().stats().samples > 0) {
+            log::warn(
+                "MODEL DIVERGENCE tick={} dx={:.3f} dy={:.3f} dvx={:.3f} dvy={:.3f} "
+                "modeMatched={} groundedMatched={} collisionMatched={}",
+                m_fields->tick,
+                modelError.dx,
+                modelError.dy,
+                modelError.dvx,
+                modelError.dvy,
+                modelError.modeMatched,
+                modelError.landingMatched,
+                modelError.collisionMatched
+            );
+        }
+
+        const bool readyForInput = autobotEnabled
+            && decision.active
+            && decision.plan.gameStateReady
+            && decision.plan.worldReady
+            && decision.plan.physicsReady
+            && decision.plan.plannerReady;
+
+        const auto inputStart = PerfClock::now();
+        m_fields->inputController.setBotControl(readyForInput, playLayer, inputTimestamp);
+        if (readyForInput) {
             m_fields->inputController.apply(decision.action, playLayer, inputTimestamp);
+        }
+        m_fields->performance.input.add(elapsedMs(inputStart));
+
+        if (readyForInput) {
             decision.ownership = m_fields->inputController.ownership();
             decision.active = decision.ownership == autobot::control::InputOwnership::Bot;
+        } else {
+            decision.ownership = autobotEnabled
+                ? autobot::control::InputOwnership::None
+                : autobot::control::InputOwnership::User;
+            decision.active = false;
+            if (autobotEnabled && decision.reason.empty()) {
+                decision.reason = "AUTOBOT WAITING FOR READY";
+            }
         }
-        m_fields->autonomousHUD.update(snapshot, decision);
+
+        const auto finalOverlayStart = PerfClock::now();
+        m_fields->showTrajectory.update(decision.plan);
+        m_fields->autonomousHUD.update(snapshot, decision, solverDebugEnabled);
+        debugOverlayMs += elapsedMs(finalOverlayStart);
+        m_fields->performance.debugOverlay.add(debugOverlayMs);
+
+        if (m_fields->tick % 120u == 0u) {
+            auto emitPerf = [&](char const* name, autobot::core::RollingTiming const& timing) {
+                const auto summary = timing.summary();
+                if (summary.samples == 0) return;
+                log::info(
+                    "SOLVER_PERF {} n={} avg={:.4f}ms p95={:.4f}ms p99={:.4f}ms",
+                    name,
+                    summary.samples,
+                    summary.averageMs,
+                    summary.p95Ms,
+                    summary.p99Ms
+                );
+            };
+            emitPerf("state_read", m_fields->performance.stateRead);
+            emitPerf("world_sync", m_fields->performance.worldSync);
+            emitPerf("query", m_fields->performance.query);
+            emitPerf("candidate_generation", m_fields->performance.candidateGeneration);
+            emitPerf("physics_simulation", m_fields->performance.physicsSimulation);
+            emitPerf("trajectory_scoring", m_fields->performance.trajectoryScoring);
+            emitPerf("planner_total", m_fields->performance.plannerTotal);
+            emitPerf("input", m_fields->performance.input);
+            emitPerf("debug_overlay", m_fields->performance.debugOverlay);
+        }
     }
 };
