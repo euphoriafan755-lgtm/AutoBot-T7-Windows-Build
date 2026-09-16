@@ -16,7 +16,8 @@ public:
     bool attach(PlayLayer* playLayer);
     void update(
         core::GameSnapshot const& snapshot,
-        control::AutonomousDecision const& decision
+        control::AutonomousDecision const& decision,
+        bool solverDebug
     );
 
     [[nodiscard]] bool attached() const { return m_label != nullptr; }
