@@ -22,6 +22,7 @@ GameMode GameStateReader::detectMode(PlayerObject const* player) {
 GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTick) {
     GameSnapshot snapshot{};
     snapshot.gameTick = gameTick;
+    snapshot.solverSampleID = gameTick;
 
     if (!playLayer || !playLayer->m_player1) {
         return snapshot;
@@ -29,6 +30,7 @@ GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTi
 
     auto* player = playLayer->m_player1;
     const auto position = player->getRealPosition();
+    const auto objectRect = player->getObjectRect();
 
     snapshot.valid = true;
     snapshot.levelTime = playLayer->m_gameState.m_levelTime;
@@ -40,10 +42,11 @@ GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTi
     snapshot.player.velocityY = player->getYVelocity();
     snapshot.player.gravity = player->m_gravity;
     snapshot.player.gravityModifier = static_cast<double>(player->m_gravityMod);
+    snapshot.player.jumpAcceleration = player->m_jumpAccel;
     snapshot.player.speed = static_cast<double>(player->m_playerSpeed);
+    snapshot.player.objectBoundsWidth = static_cast<double>(objectRect.size.width);
+    snapshot.player.objectBoundsHeight = static_cast<double>(objectRect.size.height);
     snapshot.player.mode = detectMode(player);
-    // Geometry Dash itself uses vehicleSize < 1.f to branch on mini behavior
-    // in current gameplay code; avoid relying on PlayerCheckpoint-only m_isMini.
     snapshot.player.mini = player->m_vehicleSize < 1.0f;
     snapshot.player.grounded = player->m_isOnGround;
     snapshot.player.upsideDown = player->m_isUpsideDown;
