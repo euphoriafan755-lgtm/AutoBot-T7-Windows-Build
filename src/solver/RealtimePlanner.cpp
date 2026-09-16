@@ -1,6 +1,7 @@
 #include "autobot/solver/RealtimePlanner.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -37,7 +38,16 @@ PlanDecision RealtimePlanner::plan(
     PhysicsValidationHarness const& validation,
     bool botHolding
 ) const {
+    using Clock = std::chrono::steady_clock;
+    const auto plannerStart = Clock::now();
+
     PlanDecision decision{};
+    auto finish = [&]() {
+        decision.plannerDurationMs = std::chrono::duration<double, std::milli>(
+            Clock::now() - plannerStart
+        ).count();
+    };
+
     decision.gameStateReady = snapshot.valid && !snapshot.player.dead;
     decision.worldReady = collisionWorld.ready();
     decision.lastModelError = validation.stats().lastError;
@@ -45,25 +55,36 @@ PlanDecision RealtimePlanner::plan(
     if (!snapshot.valid) {
         decision.reason = "AUTOBOT WAITING FOR GAME STATE";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
     if (snapshot.player.dead) {
         decision.status = SolverStatus::Stopped;
         decision.reason = "PLAYER DEAD - WAITING FOR RESTART";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
     if (!collisionWorld.ready()) {
         decision.reason = "AUTOBOT WAITING FOR WORLD";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
+        return decision;
+    }
+    if (snapshot.player.mode == core::GameMode::Unknown) {
+        decision.status = SolverStatus::Stopped;
+        decision.reason = "MODEL UNAVAILABLE FOR UNKNOWN MODE";
+        decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
-    auto const& calibration = validation.calibration(snapshot.player.mode);
-    decision.physicsReady = calibration.timingReady();
+    const auto& calibration = validation.calibration(snapshot.player.mode);
+    decision.physicsReady = validation.modeReady(snapshot.player.mode);
     if (!decision.physicsReady) {
-        decision.reason = "AUTOBOT WAITING FOR PHYSICS TIMING SAMPLE";
+        decision.reason = "AUTOBOT WAITING FOR PHYSICS MODEL SAMPLE";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
@@ -71,6 +92,7 @@ PlanDecision RealtimePlanner::plan(
     if (!local.complete) {
         decision.reason = "AUTOBOT WAITING FOR LOCAL WORLD";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
@@ -78,14 +100,21 @@ PlanDecision RealtimePlanner::plan(
     if (horizon == 0) {
         decision.reason = "AUTOBOT WAITING FOR HORIZON";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
+    const auto generationStart = Clock::now();
     auto candidates = m_actionGenerator.generate(snapshot, horizon);
+    decision.candidateGenerationMs = std::chrono::duration<double, std::milli>(
+        Clock::now() - generationStart
+    ).count();
+
     if (candidates.empty()) {
         decision.status = SolverStatus::Stopped;
         decision.reason = "NO ACTION CANDIDATES";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
@@ -95,6 +124,7 @@ PlanDecision RealtimePlanner::plan(
     bool anyNonFatal = false;
 
     for (auto const& candidate : candidates) {
+        const auto simulationStart = Clock::now();
         auto trajectory = m_simulator.simulate(
             snapshot,
             collisionWorld,
@@ -103,7 +133,16 @@ PlanDecision RealtimePlanner::plan(
             candidate,
             horizon
         );
+        decision.physicsSimulationMs += std::chrono::duration<double, std::milli>(
+            Clock::now() - simulationStart
+        ).count();
+
+        const auto scoringStart = Clock::now();
         const double score = m_scorer.score(trajectory);
+        decision.trajectoryScoringMs += std::chrono::duration<double, std::milli>(
+            Clock::now() - scoringStart
+        ).count();
+
         if (!trajectory.fatalCollision) anyNonFatal = true;
 
         const auto index = decision.trajectories.size();
@@ -119,6 +158,7 @@ PlanDecision RealtimePlanner::plan(
         decision.status = SolverStatus::NoSafePath;
         decision.reason = "NO SAFE PATH";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
         return decision;
     }
 
@@ -142,8 +182,7 @@ PlanDecision RealtimePlanner::plan(
         auto const& target = list.front();
         if (target.primitiveIndex >= collisionWorld.primitives().size()) return;
         decision.targetPrimitiveIndex = target.primitiveIndex;
-        decision.targetObjectID =
-            collisionWorld.primitives()[target.primitiveIndex].objectID;
+        decision.targetObjectID = collisionWorld.primitives()[target.primitiveIndex].objectID;
         decision.targetDistance = target.forwardDistance;
     };
     if (!local.hazards.empty()) chooseTarget(local.hazards);
@@ -161,11 +200,11 @@ PlanDecision RealtimePlanner::plan(
         decision.predictedNextState.mini = snapshot.player.mini;
         decision.predictedNextState.grounded = p.landing;
         decision.predictedNextState.upsideDown = snapshot.player.upsideDown;
-        decision.predictedNextState.holding =
-            selected.candidate.desiredHoldAt(0);
+        decision.predictedNextState.holding = selected.candidate.desiredHoldAt(0);
         decision.predictedNextState.alive = !p.collision;
     }
 
+    finish();
     return decision;
 }
 
