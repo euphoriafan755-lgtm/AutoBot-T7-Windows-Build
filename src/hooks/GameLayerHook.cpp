@@ -384,7 +384,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                 m_fields->tick,
                 decision.plan.plannerDurationMs,
                 kPlannerBudgetMs,
-                snapshot.valid ? core::toString(snapshot.player.mode) : "UNKNOWN"
+                snapshot.valid ? autobot::core::toString(snapshot.player.mode) : "UNKNOWN"
             );
         }
 
