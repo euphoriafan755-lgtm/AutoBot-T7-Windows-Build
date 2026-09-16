@@ -179,6 +179,11 @@ struct PlanDecision {
     ModelError lastModelError{};
     bool hasPredictedNextState = false;
     SimState predictedNextState{};
+
+    double candidateGenerationMs = 0.0;
+    double physicsSimulationMs = 0.0;
+    double trajectoryScoringMs = 0.0;
+    double plannerDurationMs = 0.0;
 };
 
 inline constexpr std::string_view toString(SolverStatus value) {
