@@ -42,7 +42,14 @@ GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTi
     snapshot.player.velocityY = player->getYVelocity();
     snapshot.player.gravity = player->m_gravity;
     snapshot.player.gravityModifier = static_cast<double>(player->m_gravityMod);
-    snapshot.player.jumpAcceleration = player->m_jumpAccel;
+
+    // Geode 5.10.1 / GD 2.2081 does not expose the historical
+    // PlayerObject::m_jumpAccel binding. Do not guess an offset or reinterpret
+    // unrelated fields. A value of 0 explicitly means "not directly bound";
+    // PhysicsValidationHarness learns the actual press delta from runtime
+    // predicted-vs-actual samples once input occurs.
+    snapshot.player.jumpAcceleration = 0.0;
+
     snapshot.player.speed = static_cast<double>(player->m_playerSpeed);
     snapshot.player.objectBoundsWidth = static_cast<double>(objectRect.size.width);
     snapshot.player.objectBoundsHeight = static_cast<double>(objectRect.size.height);
