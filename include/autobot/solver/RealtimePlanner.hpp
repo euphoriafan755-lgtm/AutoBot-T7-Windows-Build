@@ -28,7 +28,8 @@ private:
     [[nodiscard]] static std::size_t horizonTicks(
         core::GameSnapshot const& snapshot,
         LocalWorldView const& local,
-        ModeCalibration const& calibration
+        ModeCalibration const& calibration,
+        double requiredForwardDistance
     );
 
     LocalWorldViewBuilder m_localWorldBuilder{};

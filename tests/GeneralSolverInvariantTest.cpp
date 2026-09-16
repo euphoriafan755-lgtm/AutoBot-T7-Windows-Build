@@ -62,26 +62,28 @@ void verifyMode(GameMode mode) {
     state.vy = 0.0;
     state.mode = mode;
     state.grounded = true;
-    state.sampleDt = 1.0 / 60.0;
-    state.rawGravity = -0.8;
+    state.sampleDt = 1.0;
+    state.rawGravity = 0.8;
     state.gravityModifier = 1.0;
-    state.jumpAcceleration = 12.0;
+    state.jumpVelocity = 12.0;
 
     ModeCalibration calibration{};
-    calibration.sampleDt = state.sampleDt;
+    calibration.sampleDt = 1.0 / 60.0;
+    calibration.physicsTicksPerSecond = 60.0;
     calibration.timingSamples = 8;
-    calibration.neutralAccelerationY = -48.0;
+    calibration.horizontalScaleSamples = 8;
+    calibration.neutralAccelerationY = -0.8;
     calibration.neutralSamples = 8;
-    calibration.holdAccelerationY = 48.0;
+    calibration.holdAccelerationY = 0.8;
     calibration.holdSamples = 8;
-    calibration.releaseAccelerationY = -48.0;
+    calibration.releaseAccelerationY = -0.8;
     calibration.releaseSamples = 8;
-    calibration.pressDeltaVelocityY = 12.0;
+    calibration.pressVelocityY = 12.0;
     calibration.pressSamples = 2;
-    calibration.averageHoldVelocityY = 300.0;
-    calibration.averageReleaseVelocityY = -300.0;
+    calibration.averageHoldVelocityY = 8.0;
+    calibration.averageReleaseVelocityY = -8.0;
 
-    PhysicsStepContext context{calibration, calibration.sampleDt};
+    PhysicsStepContext context{calibration, calibration.normalizedStepDt()};
     model.step(state, true, true, false, context);
     assert(std::isfinite(state.x));
     assert(std::isfinite(state.y));
@@ -119,6 +121,7 @@ int main() {
 
     TrajectoryResult safe{};
     safe.classification = TrajectoryClass::Safe;
+    safe.horizonConclusive = true;
     safe.progress = 100.0;
     safe.minimumClearance = 40.0;
     safe.confidence = 0.8;

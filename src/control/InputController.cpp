@@ -9,8 +9,6 @@ namespace autobot::control {
 bool InputController::queueJump(PlayLayer* playLayer, bool push, double timestamp) {
     if (!playLayer) return false;
 
-    // Geometry Dash's native gameplay input queue. No OS input injection,
-    // Sleep(), macro playback, position mutation, noclip, or physics edits.
     playLayer->queueButton(
         static_cast<int>(PlayerButton::Jump),
         push,
@@ -30,13 +28,29 @@ void InputController::setBotControl(bool enabled, PlayLayer* playLayer, double t
 }
 
 bool InputController::apply(InputAction action, PlayLayer* playLayer, double timestamp) {
-    if (m_ownership != InputOwnership::Bot || !playLayer) return false;
+    m_lastTransition = transition(m_botHolding, action);
+    m_lastQueueInvoked = false;
+    m_lastQueueSucceeded = true;
+    m_lastQueuePush = false;
 
-    const auto t = transition(m_botHolding, action);
+    if (m_ownership != InputOwnership::Bot || !playLayer) {
+        m_lastQueueSucceeded = false;
+        return false;
+    }
+
     bool ok = true;
-    if (t.emitPress) ok = queueJump(playLayer, true, timestamp) && ok;
-    if (t.emitRelease) ok = queueJump(playLayer, false, timestamp) && ok;
-    m_botHolding = t.nextHolding;
+    if (m_lastTransition.emitPress) {
+        m_lastQueueInvoked = true;
+        m_lastQueuePush = true;
+        ok = queueJump(playLayer, true, timestamp) && ok;
+    }
+    if (m_lastTransition.emitRelease) {
+        m_lastQueueInvoked = true;
+        m_lastQueuePush = false;
+        ok = queueJump(playLayer, false, timestamp) && ok;
+    }
+    m_lastQueueSucceeded = ok;
+    m_botHolding = m_lastTransition.nextHolding;
 
     if (action == InputAction::SafeStop) {
         m_ownership = InputOwnership::None;
@@ -45,8 +59,13 @@ bool InputController::apply(InputAction action, PlayLayer* playLayer, double tim
 }
 
 void InputController::release(PlayLayer* playLayer, double timestamp) {
+    m_lastTransition = transition(m_botHolding, InputAction::Release);
+    m_lastQueueInvoked = false;
+    m_lastQueueSucceeded = true;
+    m_lastQueuePush = false;
     if (m_botHolding && playLayer) {
-        queueJump(playLayer, false, timestamp);
+        m_lastQueueInvoked = true;
+        m_lastQueueSucceeded = queueJump(playLayer, false, timestamp);
     }
     m_botHolding = false;
 }

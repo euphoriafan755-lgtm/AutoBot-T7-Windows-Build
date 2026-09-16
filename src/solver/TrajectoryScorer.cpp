@@ -11,6 +11,16 @@ double TrajectoryScorer::score(TrajectoryResult& trajectory) const {
         return trajectory.score;
     }
 
+    // A trajectory that simply failed to reach the relevant event is not SAFE.
+    // Keep it far below any conclusive non-fatal candidate so short horizons
+    // cannot manufacture a false-safe winner.
+    if (!trajectory.horizonConclusive
+        || trajectory.classification == TrajectoryClass::HorizonInconclusive) {
+        trajectory.score = -500000.0
+            + std::clamp(trajectory.progress, 0.0, 1000.0);
+        return trajectory.score;
+    }
+
     const double progressScore = std::clamp(trajectory.progress, -500.0, 1500.0) * 1.5;
     const double clearanceScore = std::clamp(trajectory.minimumClearance, 0.0, 240.0) * 8.0;
     const double confidenceScore = trajectory.confidence * 900.0;

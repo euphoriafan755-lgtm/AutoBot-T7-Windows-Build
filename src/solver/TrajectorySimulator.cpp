@@ -38,6 +38,15 @@ Edges playerEdges(SimState const& state) {
     };
 }
 
+world::WorldRect rectFromEdges(Edges const& e) {
+    return {
+        static_cast<float>(e.left),
+        static_cast<float>(e.bottom),
+        static_cast<float>(e.right - e.left),
+        static_cast<float>(e.top - e.bottom),
+    };
+}
+
 bool intersects(Edges const& a, Edges const& b) {
     return a.left <= b.right && a.right >= b.left
         && a.bottom <= b.top && a.top >= b.bottom;
@@ -126,12 +135,44 @@ SimState makeState(core::GameSnapshot const& snapshot, ModeCalibration const& ca
     state.alive = !snapshot.player.dead;
     state.objectWidth = std::max(1.0, snapshot.player.objectBoundsWidth);
     state.objectHeight = std::max(1.0, snapshot.player.objectBoundsHeight);
-    state.sampleDt = calibration.sampleDt;
+    state.sampleDt = calibration.normalizedStepDt();
+    state.verticalPositionScale = calibration.yPositionScale();
     state.rawGravity = snapshot.player.gravity;
     state.gravityModifier = snapshot.player.gravityModifier;
-    state.jumpAcceleration = snapshot.player.jumpAcceleration;
+    state.jumpVelocity = snapshot.player.jumpVelocity;
     state.speedScalar = snapshot.player.speed;
     return state;
+}
+
+TrajectoryPoint makePoint(
+    SimState const& state,
+    bool collision,
+    bool hazard,
+    bool landing,
+    bool portal,
+    bool modeChange,
+    world::WorldRect const* nearestHazard
+) {
+    TrajectoryPoint point{};
+    point.x = state.x;
+    point.y = state.y;
+    point.vx = state.vx;
+    point.vy = state.vy;
+    point.mode = state.mode;
+    point.collision = collision;
+    point.hazard = hazard;
+    point.landing = landing;
+    point.portal = portal;
+    point.modeChange = modeChange;
+    const auto player = playerEdges(state);
+    point.playerBounds = rectFromEdges(player);
+    if (nearestHazard) {
+        point.nearestHazardBounds = *nearestHazard;
+        const auto hazardEdges = edges(*nearestHazard);
+        point.nearestHazardDistance = clearance(player, hazardEdges);
+        point.nearestHazardIntersects = intersects(player, hazardEdges);
+    }
+    return point;
 }
 
 } // namespace
@@ -142,11 +183,14 @@ TrajectoryResult TrajectorySimulator::simulate(
     LocalWorldView const& localWorld,
     PhysicsValidationHarness const& validation,
     ActionCandidate const& candidate,
-    std::size_t horizonTicks
+    std::size_t horizonTicks,
+    bool initialHolding,
+    double requiredForwardDistance
 ) const {
     TrajectoryResult result{};
     result.candidate = candidate;
     result.finalMode = snapshot.player.mode;
+    result.requiredForwardDistance = std::max(0.0, requiredForwardDistance);
 
     if (!snapshot.valid || !collisionWorld.ready() || !localWorld.complete) {
         result.classification = TrajectoryClass::Unknown;
@@ -157,21 +201,36 @@ TrajectoryResult TrajectorySimulator::simulate(
 
     auto calibration = validation.calibration(snapshot.player.mode);
     SimState state = makeState(snapshot, calibration);
+    if (state.sampleDt <= 0.0) {
+        result.classification = TrajectoryClass::Unknown;
+        result.uncertainGeometry = true;
+        return result;
+    }
+
     const double startX = state.x;
     const double direction = state.vx < -0.001 ? -1.0 : 1.0;
-    bool desiredHoldPrevious = snapshot.player.holding;
+    bool desiredHoldPrevious = initialHolding;
 
     const auto relevant = localPrimitiveIndices(localWorld);
     auto const& primitives = collisionWorld.primitives();
     std::unordered_set<std::size_t> appliedPortals;
     appliedPortals.reserve(localWorld.portals.size() + 1);
 
-    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 8, 192);
+    world::WorldRect nearestHazardBounds{};
+    world::WorldRect const* nearestHazardPtr = nullptr;
+    if (!localWorld.hazards.empty()) {
+        result.nearestHazardPrimitive = localWorld.hazards.front().primitiveIndex;
+        result.nearestHazardSeen = result.nearestHazardPrimitive != world::kInvalidPrimitiveIndex;
+        nearestHazardBounds = localWorld.hazards.front().bounds;
+        nearestHazardPtr = &nearestHazardBounds;
+    }
+
+    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 8, 256);
+    result.horizonTicks = horizon;
     result.points.reserve(horizon + 1);
-    result.points.push_back({
-        state.x, state.y, state.vx, state.vy, state.mode,
-        false, false, false, false, false
-    });
+    result.points.push_back(makePoint(
+        state, false, false, false, false, false, nearestHazardPtr
+    ));
 
     for (std::size_t tick = 0; tick < horizon && state.alive; ++tick) {
         const bool desiredHold = candidate.desiredHoldAt(tick);
@@ -181,7 +240,12 @@ TrajectoryResult TrajectorySimulator::simulate(
 
         SimState previous = state;
         calibration = validation.calibration(state.mode);
-        PhysicsStepContext context{calibration, calibration.sampleDt};
+        const double modeDt = calibration.normalizedStepDt();
+        if (modeDt > 0.0) {
+            state.sampleDt = modeDt;
+            state.verticalPositionScale = calibration.yPositionScale();
+        }
+        PhysicsStepContext context{calibration, state.sampleDt};
         auto const& model = m_registry.modelFor(state.mode);
         model.step(state, desiredHold, pressEdge, releaseEdge, context);
         state.holding = desiredHold;
@@ -194,8 +258,6 @@ TrajectoryResult TrajectorySimulator::simulate(
 
         auto player = playerEdges(state);
 
-        // Portals are processed before collision scoring so a candidate can
-        // continue under the new mode model on subsequent simulated samples.
         for (auto primitiveIndex : relevant) {
             if (primitiveIndex >= primitives.size()) continue;
             auto const& primitive = primitives[primitiveIndex];
@@ -240,6 +302,7 @@ TrajectoryResult TrajectorySimulator::simulate(
                     result.hazardCollision = true;
                     result.fatalCollision = true;
                     result.collisionPrimitive = primitiveIndex;
+                    result.collisionTick = tick + 1;
                     state.alive = false;
                     pointCollision = true;
                     pointHazard = true;
@@ -256,6 +319,7 @@ TrajectoryResult TrajectorySimulator::simulate(
                 } else {
                     result.fatalCollision = true;
                     result.collisionPrimitive = primitiveIndex;
+                    result.collisionTick = tick + 1;
                     state.alive = false;
                     pointCollision = true;
                     break;
@@ -263,25 +327,31 @@ TrajectoryResult TrajectorySimulator::simulate(
             }
         }
 
-        result.points.push_back({
-            state.x,
-            state.y,
-            state.vx,
-            state.vy,
-            state.mode,
+        result.points.push_back(makePoint(
+            state,
             pointCollision,
             pointHazard,
             pointLanding,
             pointPortal,
-            pointModeChange
-        });
+            pointModeChange,
+            nearestHazardPtr
+        ));
+        result.simulatedTicks = tick + 1;
     }
 
     result.progress = direction * (state.x - startX);
+    result.predictedFinalX = state.x;
+    result.predictedFinalY = state.y;
     result.finalMode = state.mode;
+    result.relevantEventReached = result.fatalCollision
+        || result.portalCrossed
+        || result.progress + 0.001 >= result.requiredForwardDistance;
+    result.horizonConclusive = result.relevantEventReached;
 
     if (result.fatalCollision) {
         result.classification = TrajectoryClass::Collision;
+    } else if (!result.horizonConclusive) {
+        result.classification = TrajectoryClass::HorizonInconclusive;
     } else if (result.uncertainGeometry) {
         result.classification = TrajectoryClass::Risky;
     } else {
@@ -294,7 +364,12 @@ TrajectoryResult TrajectorySimulator::simulate(
         finalCalibration.confidence > 0.0 ? finalCalibration.confidence : 1.0
     );
     const double geometryFactor = result.uncertainGeometry ? 0.58 : 1.0;
-    result.confidence = std::clamp(calibrationConfidence * geometryFactor, 0.0, 1.0);
+    const double horizonFactor = result.horizonConclusive ? 1.0 : 0.2;
+    result.confidence = std::clamp(
+        calibrationConfidence * geometryFactor * horizonFactor,
+        0.0,
+        1.0
+    );
 
     if (!std::isfinite(result.minimumClearance)) {
         result.minimumClearance = localWorld.horizonY;

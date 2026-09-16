@@ -34,13 +34,19 @@ inline constexpr std::string_view toString(GameMode mode) {
 struct PlayerState {
     double x = 0.0;
     double y = 0.0;
+
+    // Raw Geometry Dash physics velocities. For classic horizontal movement,
+    // getCurrentXVelocity() is m_playerSpeed * m_speedMultiplier; it is NOT a
+    // world-units-per-second value. PhysicsValidationHarness derives the
+    // runtime conversion between these normalized physics units and seconds.
     double velocityX = 0.0;
     double velocityY = 0.0;
 
     double gravity = 0.0;
     double gravityModifier = 1.0;
-    double jumpAcceleration = 0.0;
+    double jumpVelocity = 0.0;
     double speed = 0.0;
+    double speedMultiplier = 1.0;
 
     // PlayerObject object bounds only; not claimed to equal exact gameplay hitbox.
     double objectBoundsWidth = 0.0;
@@ -52,6 +58,7 @@ struct PlayerState {
     bool grounded = false;
     bool upsideDown = false;
     bool holding = false;
+    bool goingLeft = false;
     bool dead = false;
 };
 

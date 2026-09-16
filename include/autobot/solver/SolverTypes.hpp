@@ -5,10 +5,10 @@
 #include "autobot/world/CollisionTypes.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <cmath>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +26,7 @@ enum class TrajectoryClass {
     Safe,
     Risky,
     Collision,
+    HorizonInconclusive,
     Unknown,
 };
 
@@ -76,10 +77,12 @@ struct SimState {
     double objectWidth = 30.0;
     double objectHeight = 30.0;
 
+    // sampleDt is normalized GD physics time, not wall-clock seconds.
     double sampleDt = 0.0;
+    double verticalPositionScale = 0.9;
     double rawGravity = 0.0;
     double gravityModifier = 1.0;
-    double jumpAcceleration = 0.0;
+    double jumpVelocity = 0.0;
     double speedScalar = 0.0;
 };
 
@@ -95,6 +98,11 @@ struct TrajectoryPoint {
     bool landing = false;
     bool portal = false;
     bool modeChange = false;
+
+    world::WorldRect playerBounds{};
+    world::WorldRect nearestHazardBounds{};
+    double nearestHazardDistance = std::numeric_limits<double>::infinity();
+    bool nearestHazardIntersects = false;
 };
 
 struct TrajectoryResult {
@@ -108,13 +116,23 @@ struct TrajectoryResult {
     bool portalCrossed = false;
     bool modeChanged = false;
     bool uncertainGeometry = false;
+    bool horizonConclusive = false;
+    bool relevantEventReached = false;
+    bool nearestHazardSeen = false;
 
     std::size_t collisionPrimitive = world::kInvalidPrimitiveIndex;
+    std::size_t collisionTick = std::numeric_limits<std::size_t>::max();
     std::size_t portalPrimitive = world::kInvalidPrimitiveIndex;
+    std::size_t nearestHazardPrimitive = world::kInvalidPrimitiveIndex;
     core::GameMode finalMode = core::GameMode::Unknown;
 
+    std::size_t horizonTicks = 0;
+    std::size_t simulatedTicks = 0;
+    double requiredForwardDistance = 0.0;
     double progress = 0.0;
     double minimumClearance = std::numeric_limits<double>::infinity();
+    double predictedFinalX = 0.0;
+    double predictedFinalY = 0.0;
     double score = -std::numeric_limits<double>::infinity();
     double confidence = 0.0;
 };
@@ -156,6 +174,44 @@ struct ModelError {
     }
 };
 
+struct ModelTruthDiagnostics {
+    world::WorldRect localQueryRect{};
+
+    double realDtSeconds = 0.0;
+    double simDtNormalized = 0.0;
+    double physicsTicksPerSecond = 0.0;
+    double rawVelocityX = 0.0;
+    double observedWorldVelocityX = 0.0;
+    double observedWorldVelocityY = 0.0;
+    double verticalPositionScale = 0.0;
+
+    std::size_t horizonTicks = 0;
+    double predictedHorizonSeconds = 0.0;
+    double requiredForwardDistance = 0.0;
+
+    std::size_t nearestHazardPrimitive = world::kInvalidPrimitiveIndex;
+    std::size_t nearestHazardSourceIndex = world::kInvalidPrimitiveIndex;
+    int nearestHazardObjectID = 0;
+    int nearestHazardUniqueID = 0;
+    world::WorldRect nearestHazardBounds{};
+    world::GeometryVerification nearestHazardGeometry = world::GeometryVerification::NotSupported;
+    double nearestHazardDistance = std::numeric_limits<double>::infinity();
+    double timeToHazardSeconds = std::numeric_limits<double>::infinity();
+    double samplesToHazard = std::numeric_limits<double>::infinity();
+
+    bool hazardExistsInCollisionWorld = false;
+    bool hazardClassifiedHazard = false;
+    bool hazardPrimitiveExists = false;
+    bool hazardHashIndexed = false;
+    bool hazardInsideLocalQueryRect = false;
+    bool hazardLocalWorldContains = false;
+    bool hazardBruteForceContains = false;
+    bool hazardEnabled = false;
+    bool hazardIndexable = false;
+    bool hazardNoTouch = false;
+    std::size_t hazardHashCellCount = 0;
+};
+
 struct PlanDecision {
     SolverStatus status = SolverStatus::Waiting;
     control::InputAction inputAction = control::InputAction::SafeStop;
@@ -177,6 +233,7 @@ struct PlanDecision {
     std::size_t selectedTrajectory = std::numeric_limits<std::size_t>::max();
 
     ModelError lastModelError{};
+    ModelTruthDiagnostics modelTruth{};
     bool hasPredictedNextState = false;
     SimState predictedNextState{};
 
@@ -201,6 +258,7 @@ inline constexpr std::string_view toString(TrajectoryClass value) {
         case TrajectoryClass::Safe: return "SAFE";
         case TrajectoryClass::Risky: return "RISKY";
         case TrajectoryClass::Collision: return "COLLISION";
+        case TrajectoryClass::HorizonInconclusive: return "HORIZON INCONCLUSIVE";
         case TrajectoryClass::Unknown: return "UNKNOWN";
     }
     return "UNKNOWN";

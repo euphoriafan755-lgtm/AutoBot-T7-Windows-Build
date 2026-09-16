@@ -2,6 +2,8 @@
 
 #include <Geode/Geode.hpp>
 
+#include <cmath>
+
 using namespace geode::prelude;
 
 namespace autobot::core {
@@ -38,26 +40,36 @@ GameSnapshot GameStateReader::capture(PlayLayer* playLayer, std::uint64_t gameTi
 
     snapshot.player.x = static_cast<double>(position.x);
     snapshot.player.y = static_cast<double>(position.y);
-    snapshot.player.velocityX = player->getCurrentXVelocity();
+
+    double rawXVelocity = player->getCurrentXVelocity();
+    if (!player->m_isPlatformer && player->m_isGoingLeft) {
+        rawXVelocity = -std::abs(rawXVelocity);
+    }
+    snapshot.player.velocityX = rawXVelocity;
     snapshot.player.velocityY = player->getYVelocity();
     snapshot.player.gravity = player->m_gravity;
     snapshot.player.gravityModifier = static_cast<double>(player->m_gravityMod);
 
-    // Geode 5.10.1 / GD 2.2081 does not expose the historical
-    // PlayerObject::m_jumpAccel binding. Do not guess an offset or reinterpret
-    // unrelated fields. A value of 0 explicitly means "not directly bound";
-    // PhysicsValidationHarness learns the actual press delta from runtime
-    // predicted-vs-actual samples once input occurs.
-    snapshot.player.jumpAcceleration = 0.0;
+    // Ground-mode jump velocity is exposed as m_yStart in the 2.2081 binding.
+    // This is a velocity target in GD's normalized physics units, not an
+    // acceleration and not a world-units-per-second value.
+    snapshot.player.jumpVelocity = player->m_yStart;
 
     snapshot.player.speed = static_cast<double>(player->m_playerSpeed);
+    snapshot.player.speedMultiplier = static_cast<double>(player->m_speedMultiplier);
     snapshot.player.objectBoundsWidth = static_cast<double>(objectRect.size.width);
     snapshot.player.objectBoundsHeight = static_cast<double>(objectRect.size.height);
     snapshot.player.mode = detectMode(player);
     snapshot.player.mini = player->m_vehicleSize < 1.0f;
     snapshot.player.grounded = player->m_isOnGround;
     snapshot.player.upsideDown = player->m_isUpsideDown;
-    snapshot.player.holding = player->buttonDown(PlayerButton::Jump);
+
+    // Geode 2.2081's inline buttonDown(Jump) is not a usable hold-state query
+    // for this purpose. m_jumpBuffered is the runtime jump/hold state consumed
+    // by PlayerObject::updateJump; the planner itself uses InputController's
+    // authoritative botHolding state for counterfactual input edges.
+    snapshot.player.holding = player->m_jumpBuffered;
+    snapshot.player.goingLeft = player->m_isGoingLeft;
     snapshot.player.dead = player->m_isDead;
 
     return snapshot;

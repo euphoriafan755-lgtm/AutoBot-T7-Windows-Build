@@ -38,12 +38,22 @@ void PhysicsValidationHarness::ema(double& target, double sample, double alpha) 
 
 void PhysicsValidationHarness::recomputeConfidence(ModeCalibration& c) {
     const double timing = std::min(1.0, static_cast<double>(c.timingSamples) / 8.0);
-    const double neutral = std::min(1.0, static_cast<double>(c.neutralSamples) / 8.0);
+    const double horizontal = std::min(
+        1.0,
+        static_cast<double>(c.horizontalScaleSamples) / 8.0
+    );
+    const double vertical = c.verticalScaleSamples == 0
+        ? 0.35
+        : std::min(1.0, static_cast<double>(c.verticalScaleSamples) / 8.0);
     const double input = std::min(
         1.0,
         static_cast<double>(c.pressSamples + c.holdSamples + c.releaseSamples) / 10.0
     );
-    c.confidence = std::clamp(0.45 * timing + 0.35 * neutral + 0.20 * input, 0.0, 1.0);
+    c.confidence = std::clamp(
+        0.30 * timing + 0.40 * horizontal + 0.20 * vertical + 0.10 * input,
+        0.0,
+        1.0
+    );
 }
 
 void PhysicsValidationHarness::observe(
@@ -62,13 +72,13 @@ void PhysicsValidationHarness::observe(
         return;
     }
 
-    const double dt = current.levelTime - m_previous.levelTime;
+    const double dtSeconds = current.levelTime - m_previous.levelTime;
     const bool comparable = m_previous.valid
         && !current.player.dead
         && !m_previous.player.dead
         && current.player.mode == m_previous.player.mode
-        && dt > 0.00001
-        && dt < 0.25;
+        && dtSeconds > 0.00001
+        && dtSeconds < 0.25;
 
     if (!comparable) {
         ++m_stats.rejectedSamples;
@@ -77,41 +87,82 @@ void PhysicsValidationHarness::observe(
     }
 
     auto& calibration = m_calibrations[modeIndex(current.player.mode)];
-    ema(calibration.sampleDt, dt, 0.18);
+    ema(calibration.sampleDt, dtSeconds, 0.18);
     ++calibration.timingSamples;
 
+    const double dx = current.player.x - m_previous.player.x;
+    const double dy = current.player.y - m_previous.player.y;
+    const double rawVx = (current.player.velocityX + m_previous.player.velocityX) * 0.5;
+
+    if (std::abs(rawVx) > 0.01) {
+        const double normalizedTicks = dx / rawVx;
+        const double ticksPerSecond = normalizedTicks / dtSeconds;
+        if (std::isfinite(ticksPerSecond)
+            && ticksPerSecond > 1.0
+            && ticksPerSecond < 1000.0) {
+            ema(calibration.physicsTicksPerSecond, ticksPerSecond, 0.18);
+            ++calibration.horizontalScaleSamples;
+        }
+    }
+
+    ema(calibration.observedWorldVelocityX, dx / dtSeconds, 0.12);
+    ema(calibration.averageVelocityX, dx / dtSeconds, 0.12);
+    ema(calibration.observedWorldVelocityY, dy / dtSeconds, 0.12);
+
+    const double normalizedDt = calibration.normalizedStepDt();
+    if (normalizedDt > 0.00001
+        && !current.player.grounded
+        && !m_previous.player.grounded
+        && std::abs(current.player.velocityY) > 0.25) {
+        const double scale = dy / (current.player.velocityY * normalizedDt);
+        if (std::isfinite(scale) && scale > 0.3 && scale < 1.5) {
+            ema(calibration.verticalPositionScale, scale, 0.12);
+            ++calibration.verticalScaleSamples;
+        }
+    }
+
     const double dvY = current.player.velocityY - m_previous.player.velocityY;
-    const double accelerationY = dvY / dt;
-    ema(calibration.averageVelocityX, current.player.velocityX, 0.12);
+    const double rawAccelerationY = normalizedDt > 0.00001 ? dvY / normalizedDt : 0.0;
 
     switch (previousAction) {
         case control::InputAction::Press:
-            ema(calibration.pressDeltaVelocityY, dvY, 0.20);
+            ema(calibration.pressVelocityY, current.player.velocityY, 0.20);
             ++calibration.pressSamples;
-            if (previousDesiredHold) {
-                ema(calibration.holdAccelerationY, accelerationY, 0.12);
+            if (previousDesiredHold && normalizedDt > 0.00001) {
+                ema(calibration.holdAccelerationY, rawAccelerationY, 0.12);
                 ema(calibration.averageHoldVelocityY, current.player.velocityY, 0.12);
                 ++calibration.holdSamples;
             }
             break;
 
         case control::InputAction::Hold:
-            ema(calibration.holdAccelerationY, accelerationY, 0.12);
-            ema(calibration.averageHoldVelocityY, current.player.velocityY, 0.12);
-            ++calibration.holdSamples;
+            if (normalizedDt > 0.00001) {
+                ema(calibration.holdAccelerationY, rawAccelerationY, 0.12);
+                ema(calibration.averageHoldVelocityY, current.player.velocityY, 0.12);
+                ++calibration.holdSamples;
+            }
             break;
 
         case control::InputAction::Release:
-            ema(calibration.releaseAccelerationY, accelerationY, 0.12);
-            ema(calibration.averageReleaseVelocityY, current.player.velocityY, 0.12);
-            ++calibration.releaseSamples;
+            if (normalizedDt > 0.00001) {
+                ema(calibration.releaseAccelerationY, rawAccelerationY, 0.12);
+                ema(calibration.averageReleaseVelocityY, current.player.velocityY, 0.12);
+                ++calibration.releaseSamples;
+            }
             break;
 
         case control::InputAction::NoPress:
         case control::InputAction::SafeStop:
-            ema(calibration.neutralAccelerationY, accelerationY, 0.10);
-            ema(calibration.averageReleaseVelocityY, current.player.velocityY, 0.10);
-            ++calibration.neutralSamples;
+            // Grounded frames often have vy clamped by collision resolution and
+            // therefore do not measure gravity. Only learn free-flight gravity
+            // from clean airborne samples.
+            if (normalizedDt > 0.00001
+                && !current.player.grounded
+                && !m_previous.player.grounded) {
+                ema(calibration.neutralAccelerationY, rawAccelerationY, 0.10);
+                ema(calibration.averageReleaseVelocityY, current.player.velocityY, 0.10);
+                ++calibration.neutralSamples;
+            }
             break;
     }
 
@@ -150,7 +201,7 @@ ModeCalibration const& PhysicsValidationHarness::calibration(core::GameMode mode
 
 bool PhysicsValidationHarness::modeReady(core::GameMode mode) const {
     auto const& c = calibration(mode);
-    return c.timingReady() && c.neutralReady();
+    return c.timingReady() && c.horizontalReady();
 }
 
 } // namespace autobot::solver

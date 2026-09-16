@@ -65,12 +65,20 @@ public:
 
     [[nodiscard]] bool botHolding() const { return m_botHolding; }
     [[nodiscard]] InputOwnership ownership() const { return m_ownership; }
+    [[nodiscard]] InputStateTransition const& lastTransition() const { return m_lastTransition; }
+    [[nodiscard]] bool lastQueueInvoked() const { return m_lastQueueInvoked; }
+    [[nodiscard]] bool lastQueueSucceeded() const { return m_lastQueueSucceeded; }
+    [[nodiscard]] bool lastQueuePush() const { return m_lastQueuePush; }
 
 private:
     bool queueJump(PlayLayer* playLayer, bool push, double timestamp);
 
     bool m_botHolding = false;
     InputOwnership m_ownership = InputOwnership::User;
+    InputStateTransition m_lastTransition{};
+    bool m_lastQueueInvoked = false;
+    bool m_lastQueueSucceeded = false;
+    bool m_lastQueuePush = false;
 };
 
 } // namespace autobot::control

@@ -16,6 +16,7 @@ ccColor4F pathColor(bool selected, solver::TrajectoryClass cls) {
         case solver::TrajectoryClass::Safe: return {0.2f, 1.0f, 0.35f, 0.55f};
         case solver::TrajectoryClass::Risky: return {1.0f, 0.75f, 0.15f, 0.55f};
         case solver::TrajectoryClass::Collision: return {1.0f, 0.2f, 0.2f, 0.55f};
+        case solver::TrajectoryClass::HorizonInconclusive: return {0.45f, 0.55f, 1.0f, 0.45f};
         case solver::TrajectoryClass::Unknown: return {0.75f, 0.35f, 1.0f, 0.55f};
     }
     return {1.0f, 1.0f, 1.0f, 0.55f};

@@ -3,11 +3,43 @@
 #include <Geode/Geode.hpp>
 #include <fmt/format.h>
 
+#include <limits>
 #include <string>
 
 using namespace geode::prelude;
 
 namespace autobot::ui {
+namespace {
+
+solver::TrajectoryResult const* findTrajectory(
+    solver::PlanDecision const& plan,
+    char const* label
+) {
+    for (auto const& trajectory : plan.trajectories) {
+        if (trajectory.candidate.label == label) return &trajectory;
+    }
+    return nullptr;
+}
+
+std::string trajectoryTruthLine(
+    char const* prefix,
+    solver::TrajectoryResult const* trajectory
+) {
+    if (!trajectory) return fmt::format("{}: NONE", prefix);
+    const auto tick = trajectory->collisionTick == std::numeric_limits<std::size_t>::max()
+        ? std::string("-")
+        : fmt::format("{}", trajectory->collisionTick);
+    return fmt::format(
+        "{}: {} FATAL={} TICK={} SCORE={:.0f}",
+        prefix,
+        solver::toString(trajectory->classification),
+        trajectory->fatalCollision ? "YES" : "NO",
+        tick,
+        trajectory->score
+    );
+}
+
+} // namespace
 
 bool AutonomousHUD::attach(PlayLayer* playLayer) {
     if (m_label) return true;
@@ -19,7 +51,7 @@ bool AutonomousHUD::attach(PlayLayer* playLayer) {
     const auto winSize = CCDirector::get()->getWinSize();
     m_label->setAnchorPoint({0.0f, 1.0f});
     m_label->setPosition({8.0f, winSize.height - 8.0f});
-    m_label->setScale(0.31f);
+    m_label->setScale(0.28f);
     m_label->setZOrder(1000000);
     m_label->setOpacity(235);
     m_label->setID("autobot-control-hud"_spr);
@@ -90,58 +122,58 @@ void AutonomousHUD::update(
     );
 
     if (solverDebug) {
-        std::string scores;
-        for (std::size_t i = 0; i < plan.trajectories.size(); ++i) {
-            auto const& trajectory = plan.trajectories[i];
-            if (!scores.empty()) scores += " | ";
-            scores += fmt::format(
-                "{}{}:{:.1f}",
-                i == plan.selectedTrajectory ? "*" : "",
-                trajectory.candidate.label,
-                trajectory.score
-            );
+        auto const* noPress = findTrajectory(plan, "NO PRESS");
+        auto const* pressNow = findTrajectory(plan, "PRESS NOW");
+        const auto& truth = plan.modelTruth;
+
+        double simX = snapshot.player.x;
+        double simY = snapshot.player.y;
+        if (plan.hasPredictedNextState) {
+            simX = plan.predictedNextState.x;
+            simY = plan.predictedNextState.y;
         }
-        if (scores.empty()) scores = "NONE";
+
+        text += fmt::format(
+            "\n--- MODEL TRUTH ---\n"
+            "REAL X/Y: {:.2f} / {:.2f}\n"
+            "SIM NEXT X/Y: {:.2f} / {:.2f}\n"
+            "DELTA X/Y: {:.2f} / {:.2f}\n"
+            "DT: real {:.5f}s sim {:.3f} ticks ratio {:.2f}\n"
+            "RAW VX: {:.3f} | OBS WORLD VX: {:.2f}\n"
+            "NEXT HAZARD DISTANCE: {:.2f}\n"
+            "{}\n"
+            "{}\n"
+            "SELECTED: {}\n"
+            "FALSE SAFE COUNT: {}",
+            snapshot.player.x,
+            snapshot.player.y,
+            simX,
+            simY,
+            modelError.dx,
+            modelError.dy,
+            truth.realDtSeconds,
+            truth.simDtNormalized,
+            truth.physicsTicksPerSecond,
+            truth.rawVelocityX,
+            truth.observedWorldVelocityX,
+            truth.nearestHazardDistance,
+            trajectoryTruthLine("NO PRESS", noPress),
+            trajectoryTruthLine("PRESS NOW", pressNow),
+            selectedAction,
+            decision.falseSafeTotal
+        );
 
         if (selected) {
             text += fmt::format(
-                "\n--- SOLVER DEBUG ---\n"
-                "CANDIDATE SCORES: {}\n"
-                "PRED COLLISION: {}\n"
-                "PRED LANDING/SURFACE: {}\n"
-                "CLEARANCE: {:.2f}\n"
-                "PORTAL PREDICTION: {}\n"
-                "MODE TRANSITION: {} -> {}\n"
-                "PLANNER: {:.3f}ms | GEN {:.3f} | SIM {:.3f} | SCORE {:.3f}\n"
-                "MODEL DELTA: dx {:.2f} dy {:.2f} dvx {:.2f} dvy {:.2f}",
-                scores,
-                selected->fatalCollision ? "YES" : "NO",
-                selected->landed ? "YES" : "NO",
+                "\nCLEARANCE: {:.2f} | HORIZON: {} {}\n"
+                "PLANNER: {:.3f}ms | GEN {:.3f} | SIM {:.3f} | SCORE {:.3f}",
                 selected->minimumClearance,
-                selected->portalCrossed ? "YES" : "NO",
-                mode,
-                core::toString(selected->finalMode),
+                selected->horizonTicks,
+                selected->horizonConclusive ? "CONCLUSIVE" : "INCONCLUSIVE",
                 plan.plannerDurationMs,
                 plan.candidateGenerationMs,
                 plan.physicsSimulationMs,
-                plan.trajectoryScoringMs,
-                modelError.dx,
-                modelError.dy,
-                modelError.dvx,
-                modelError.dvy
-            );
-        } else {
-            text += fmt::format(
-                "\n--- SOLVER DEBUG ---\n"
-                "CANDIDATE SCORES: {}\n"
-                "PLANNER: {:.3f}ms | GEN {:.3f} | SIM {:.3f} | SCORE {:.3f}\n"
-                "REASON: {}",
-                scores,
-                plan.plannerDurationMs,
-                plan.candidateGenerationMs,
-                plan.physicsSimulationMs,
-                plan.trajectoryScoringMs,
-                decision.reason
+                plan.trajectoryScoringMs
             );
         }
     }

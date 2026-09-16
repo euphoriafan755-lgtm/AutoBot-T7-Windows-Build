@@ -12,19 +12,21 @@ double stepDt(SimState const& state, PhysicsStepContext const& context) {
     return 0.0;
 }
 
-double neutralDeltaVelocity(SimState const& state, PhysicsStepContext const& context) {
+double gravityMagnitude(SimState const& state, PhysicsStepContext const& context) {
     const auto dt = stepDt(state, context);
-    if (context.calibration.neutralSamples > 0 && dt > 0.0) {
-        return context.calibration.neutralAccelerationY * dt;
+    if (dt <= 0.0) return 0.0;
+    if (context.calibration.neutralSamples > 0) {
+        return std::abs(context.calibration.neutralAccelerationY) * dt;
     }
-    return state.rawGravity * state.gravityModifier;
+    return std::abs(state.rawGravity * state.gravityModifier) * dt;
 }
 
-double pressImpulse(SimState const& state, PhysicsStepContext const& context) {
+double pressVelocity(SimState const& state, PhysicsStepContext const& context) {
+    if (std::abs(state.jumpVelocity) > 0.0001) return std::abs(state.jumpVelocity);
     if (context.calibration.pressSamples > 0) {
-        return context.calibration.pressDeltaVelocityY;
+        return std::abs(context.calibration.pressVelocityY);
     }
-    return state.jumpAcceleration;
+    return 0.0;
 }
 
 double gravityDirectedDelta(
@@ -32,13 +34,13 @@ double gravityDirectedDelta(
     PhysicsStepContext const& context,
     bool upsideDown
 ) {
-    const double magnitude = std::abs(neutralDeltaVelocity(state, context));
+    const double magnitude = gravityMagnitude(state, context);
     return upsideDown ? magnitude : -magnitude;
 }
 
 void integratePosition(SimState& state, double dt) {
     state.x += state.vx * dt;
-    state.y += state.vy * dt;
+    state.y += state.vy * dt * state.verticalPositionScale;
 }
 
 } // namespace
@@ -52,17 +54,16 @@ void CubePhysicsModel::step(
 ) const {
     const double dt = stepDt(state, context);
     if (pressEdge && state.grounded) {
-        double impulse = pressImpulse(state, context);
-        if (state.upsideDown && impulse > 0.0) impulse = -impulse;
-        if (!state.upsideDown && impulse < 0.0) impulse = -impulse;
-        state.vy += impulse;
+        const double jump = pressVelocity(state, context);
+        state.vy = state.upsideDown ? -jump : jump;
         state.grounded = false;
     }
 
-    state.vy += neutralDeltaVelocity(state, context);
+    state.vy += gravityDirectedDelta(state, context, state.upsideDown);
     if (desiredHold && context.calibration.holdSamples > 0 && dt > 0.0) {
-        const double neutral = context.calibration.neutralAccelerationY;
-        state.vy += (context.calibration.holdAccelerationY - neutral) * dt;
+        const double measured = context.calibration.holdAccelerationY * dt;
+        const double gravity = gravityDirectedDelta(state, context, state.upsideDown);
+        state.vy += measured - gravity;
     }
     integratePosition(state, dt);
 }
@@ -75,7 +76,7 @@ void ShipPhysicsModel::step(
     PhysicsStepContext const& context
 ) const {
     const double dt = stepDt(state, context);
-    double delta = neutralDeltaVelocity(state, context);
+    double delta = gravityDirectedDelta(state, context, state.upsideDown);
     if (desiredHold) {
         if (context.calibration.holdSamples > 0 && dt > 0.0) {
             delta = context.calibration.holdAccelerationY * dt;
@@ -114,13 +115,11 @@ void UfoPhysicsModel::step(
 ) const {
     const double dt = stepDt(state, context);
     if (pressEdge) {
-        double impulse = pressImpulse(state, context);
-        if (state.upsideDown && impulse > 0.0) impulse = -impulse;
-        if (!state.upsideDown && impulse < 0.0) impulse = -impulse;
-        state.vy += impulse;
+        const double jump = pressVelocity(state, context);
+        state.vy = state.upsideDown ? -jump : jump;
         state.grounded = false;
     }
-    state.vy += neutralDeltaVelocity(state, context);
+    state.vy += gravityDirectedDelta(state, context, state.upsideDown);
     integratePosition(state, dt);
 }
 
@@ -156,17 +155,15 @@ void RobotPhysicsModel::step(
 ) const {
     const double dt = stepDt(state, context);
     if (pressEdge && state.grounded) {
-        double impulse = pressImpulse(state, context);
-        if (state.upsideDown && impulse > 0.0) impulse = -impulse;
-        if (!state.upsideDown && impulse < 0.0) impulse = -impulse;
-        state.vy += impulse;
+        const double jump = pressVelocity(state, context) * 0.5;
+        state.vy = state.upsideDown ? -jump : jump;
         state.grounded = false;
     }
 
     if (desiredHold && context.calibration.holdSamples > 0 && dt > 0.0) {
         state.vy += context.calibration.holdAccelerationY * dt;
     } else {
-        state.vy += neutralDeltaVelocity(state, context);
+        state.vy += gravityDirectedDelta(state, context, state.upsideDown);
     }
     integratePosition(state, dt);
 }

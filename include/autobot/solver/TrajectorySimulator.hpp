@@ -19,7 +19,9 @@ public:
         LocalWorldView const& localWorld,
         PhysicsValidationHarness const& validation,
         ActionCandidate const& candidate,
-        std::size_t horizonTicks
+        std::size_t horizonTicks,
+        bool initialHolding,
+        double requiredForwardDistance
     ) const;
 
 private:

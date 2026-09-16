@@ -17,6 +17,8 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <optional>
 
 using namespace geode::prelude;
@@ -42,6 +44,10 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         bool stability120Done = false;
         std::size_t restartStabilitySamples = 0;
         double lastLevelTime = -1.0;
+        bool pendingPressResponse = false;
+        std::uint64_t pendingPressSample = 0;
+        double pendingPressY = 0.0;
+        double pendingPressVy = 0.0;
 
         autobot::world::WorldStructureFingerprint baselineFingerprint{};
         bool baselineFingerprintValid = false;
@@ -201,6 +207,24 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         const auto snapshot = autobot::core::GameStateReader::capture(playLayer, m_fields->tick);
         m_fields->performance.stateRead.add(elapsedMs(stateReadStart));
         m_fields->hud.update(snapshot, m_fields->world);
+
+        if (m_fields->pendingPressResponse && snapshot.valid) {
+            const bool playerResponded = std::abs(snapshot.player.velocityY - m_fields->pendingPressVy) > 0.05
+                || std::abs(snapshot.player.y - m_fields->pendingPressY) > 0.05;
+            log::info(
+                "INPUT EXECUTION RESPONSE selectedSample={} observedSample={} holding={} "
+                "playerResponse={} yBefore={:.3f} yNow={:.3f} vyBefore={:.3f} vyNow={:.3f}",
+                m_fields->pendingPressSample,
+                snapshot.solverSampleID,
+                m_fields->inputController.botHolding(),
+                playerResponded,
+                m_fields->pendingPressY,
+                snapshot.player.y,
+                m_fields->pendingPressVy,
+                snapshot.player.velocityY
+            );
+            m_fields->pendingPressResponse = false;
+        }
 
         autobot::world::DynamicSyncStats syncStats{};
         if (m_fields->collisionWorld.ready()) {
@@ -372,10 +396,193 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->inputController.botHolding()
         );
 
+        if (decision.countdown.active || decision.countdown.fired) {
+            log::info(
+                "ACTION_COUNTDOWN sample={} label={} dueIn={} targetSample={} fired={} action={}",
+                snapshot.solverSampleID,
+                decision.countdown.label,
+                decision.countdown.dueIn,
+                decision.countdown.targetSampleID,
+                decision.countdown.fired,
+                autobot::control::toString(decision.action)
+            );
+        }
+
         m_fields->performance.candidateGeneration.add(decision.plan.candidateGenerationMs);
         m_fields->performance.physicsSimulation.add(decision.plan.physicsSimulationMs);
         m_fields->performance.trajectoryScoring.add(decision.plan.trajectoryScoringMs);
         m_fields->performance.plannerTotal.add(decision.plan.plannerDurationMs);
+
+        if (solverDebugEnabled
+            && decision.plan.modelTruth.nearestHazardPrimitive != autobot::world::kInvalidPrimitiveIndex
+            && (m_fields->tick % 10u == 0u)) {
+            auto const& truth = decision.plan.modelTruth;
+            log::info(
+                "MODEL_TRUTH_TRACE sample={} realX={:.3f} realY={:.3f} rawVx={:.5f} obsWorldVx={:.3f} "
+                "realDt={:.6f}s simDt={:.4f} ratio={:.3f} hazardPrim={} hazardDist={:.3f} "
+                "timeToHazard={:.4f}s samplesToHazard={:.2f} horizonTicks={} requiredDistance={:.2f}",
+                snapshot.solverSampleID,
+                snapshot.player.x,
+                snapshot.player.y,
+                truth.rawVelocityX,
+                truth.observedWorldVelocityX,
+                truth.realDtSeconds,
+                truth.simDtNormalized,
+                truth.physicsTicksPerSecond,
+                truth.nearestHazardPrimitive,
+                truth.nearestHazardDistance,
+                truth.timeToHazardSeconds,
+                truth.samplesToHazard,
+                truth.horizonTicks,
+                truth.requiredForwardDistance
+            );
+            log::info(
+                "HAZARD_PIPELINE prim={} source={} objectID={} uniqueID={} classHazard={} geometry={} "
+                "enabled={} indexable={} noTouch={} hashIndexed={} hashCells={} insideQuery={} "
+                "localContains={} bruteForceContains={}",
+                truth.nearestHazardPrimitive,
+                truth.nearestHazardSourceIndex,
+                truth.nearestHazardObjectID,
+                truth.nearestHazardUniqueID,
+                truth.hazardClassifiedHazard,
+                autobot::world::toString(truth.nearestHazardGeometry),
+                truth.hazardEnabled,
+                truth.hazardIndexable,
+                truth.hazardNoTouch,
+                truth.hazardHashIndexed,
+                truth.hazardHashCellCount,
+                truth.hazardInsideLocalQueryRect,
+                truth.hazardLocalWorldContains,
+                truth.hazardBruteForceContains
+            );
+            for (auto const& trajectory : decision.plan.trajectories) {
+                const auto collisionTick = trajectory.collisionTick == std::numeric_limits<std::size_t>::max()
+                    ? -1LL
+                    : static_cast<long long>(trajectory.collisionTick);
+                log::info(
+                    "CANDIDATE_TRACE sample={} label={} class={} fatal={} hazardCollision={} collisionTick={} "
+                    "collisionPrimitive={} minClearance={:.3f} progress={:.3f} finalX={:.3f} finalY={:.3f} "
+                    "horizonConclusive={} receivesNearestHazard={} confidence={:.3f} score={:.3f}",
+                    snapshot.solverSampleID,
+                    trajectory.candidate.label,
+                    autobot::solver::toString(trajectory.classification),
+                    trajectory.fatalCollision,
+                    trajectory.hazardCollision,
+                    collisionTick,
+                    trajectory.collisionPrimitive,
+                    trajectory.minimumClearance,
+                    trajectory.progress,
+                    trajectory.predictedFinalX,
+                    trajectory.predictedFinalY,
+                    trajectory.horizonConclusive,
+                    trajectory.nearestHazardSeen,
+                    trajectory.confidence,
+                    trajectory.score
+                );
+
+                if (trajectory.candidate.label == "NO PRESS" || trajectory.candidate.label == "PRESS NOW") {
+                    for (std::size_t i = 0; i < trajectory.points.size(); ++i) {
+                        auto const& point = trajectory.points[i];
+                        if (!point.nearestHazardIntersects
+                            && point.nearestHazardDistance > 60.0
+                            && !point.collision) {
+                            continue;
+                        }
+                        log::info(
+                            "TRAJECTORY_COLLISION_TRACE sample={} candidate={} tick={} x={:.3f} y={:.3f} "
+                            "playerBounds=({:.2f},{:.2f},{:.2f},{:.2f}) hazardBounds=({:.2f},{:.2f},{:.2f},{:.2f}) "
+                            "distance={:.3f} intersects={} collision={}",
+                            snapshot.solverSampleID,
+                            trajectory.candidate.label,
+                            i,
+                            point.x,
+                            point.y,
+                            point.playerBounds.x,
+                            point.playerBounds.y,
+                            point.playerBounds.width,
+                            point.playerBounds.height,
+                            point.nearestHazardBounds.x,
+                            point.nearestHazardBounds.y,
+                            point.nearestHazardBounds.width,
+                            point.nearestHazardBounds.height,
+                            point.nearestHazardDistance,
+                            point.nearestHazardIntersects,
+                            point.collision
+                        );
+                    }
+                }
+            }
+        }
+
+        if (decision.deathSnapshot.valid) {
+            auto const& death = decision.deathSnapshot;
+            log::error(
+                "DEATH CAUSAL SNAPSHOT deathSample={} lastSelected={} input={} class={} predictedDeath={} "
+                "realDeath=YES FALSE_SAFE={} FALSE_SAFE_TOTAL={}",
+                death.deathSampleID,
+                death.lastSelectedLabel,
+                autobot::control::toString(death.lastSelectedInput),
+                autobot::solver::toString(death.lastSelectedClass),
+                death.predictedDeath,
+                death.falseSafe,
+                decision.falseSafeTotal
+            );
+            if (death.falseSafe) {
+                log::error("RUNTIME MODEL INVARIANT FAILURE: FALSE SAFE");
+            }
+            for (auto const& sample : death.history) {
+                auto const& truth = sample.diagnostics;
+                log::error(
+                    "DEATH_HISTORY sample={} t={:.5f} x={:.3f} y={:.3f} rawVx={:.4f} rawVy={:.4f} "
+                    "grounded={} gravity={:.5f} mode={} mini={} holding={} query=({:.1f},{:.1f},{:.1f},{:.1f}) "
+                    "hazardPrim={} hazardDist={:.2f} selected={} input={} predictedDeath={}",
+                    sample.solverSampleID,
+                    sample.levelTime,
+                    sample.player.x,
+                    sample.player.y,
+                    sample.player.velocityX,
+                    sample.player.velocityY,
+                    sample.player.grounded,
+                    sample.player.gravity,
+                    autobot::core::toString(sample.player.mode),
+                    sample.player.mini,
+                    sample.player.holding,
+                    truth.localQueryRect.x,
+                    truth.localQueryRect.y,
+                    truth.localQueryRect.width,
+                    truth.localQueryRect.height,
+                    truth.nearestHazardPrimitive,
+                    truth.nearestHazardDistance,
+                    sample.selectedLabel,
+                    autobot::control::toString(sample.selectedInput),
+                    sample.predictedDeath
+                );
+                for (auto const& candidate : sample.candidates) {
+                    const auto collisionTick = candidate.collisionTick == std::numeric_limits<std::size_t>::max()
+                        ? -1LL
+                        : static_cast<long long>(candidate.collisionTick);
+                    log::error(
+                        "DEATH_HISTORY_CANDIDATE sample={} label={} class={} fatal={} hazard={} collisionPrim={} "
+                        "collisionTick={} clearance={:.3f} progress={:.3f} confidence={:.3f} score={:.3f} "
+                        "finalX={:.3f} finalY={:.3f} conclusive={}",
+                        sample.solverSampleID,
+                        candidate.label,
+                        autobot::solver::toString(candidate.classification),
+                        candidate.fatalCollision,
+                        candidate.hazardCollision,
+                        candidate.collisionPrimitive,
+                        collisionTick,
+                        candidate.minimumClearance,
+                        candidate.progress,
+                        candidate.confidence,
+                        candidate.score,
+                        candidate.finalX,
+                        candidate.finalY,
+                        candidate.horizonConclusive
+                    );
+                }
+            }
+        }
 
         constexpr double kPlannerBudgetMs = 8.0;
         if (decision.plan.plannerDurationMs > kPlannerBudgetMs) {
@@ -417,8 +624,35 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
 
         const auto inputStart = PerfClock::now();
         m_fields->inputController.setBotControl(readyForInput, playLayer, inputTimestamp);
+        bool inputApplied = false;
         if (readyForInput) {
-            m_fields->inputController.apply(decision.action, playLayer, inputTimestamp);
+            if (decision.action == autobot::control::InputAction::Press) {
+                log::info("PLANNER SELECTED PRESS sample={}", snapshot.solverSampleID);
+            }
+            inputApplied = m_fields->inputController.apply(
+                decision.action,
+                playLayer,
+                inputTimestamp
+            );
+            auto const& transition = m_fields->inputController.lastTransition();
+            if (m_fields->inputController.lastQueueInvoked()) {
+                log::info(
+                    "INPUT EXECUTION TRACE sample={} requested={} effective={} queueButtonInvoked=YES push={} "
+                    "success={} holdingAfter={}",
+                    snapshot.solverSampleID,
+                    autobot::control::toString(decision.action),
+                    autobot::control::toString(transition.effectiveAction),
+                    m_fields->inputController.lastQueuePush(),
+                    m_fields->inputController.lastQueueSucceeded(),
+                    m_fields->inputController.botHolding()
+                );
+            }
+            if (transition.emitPress && inputApplied) {
+                m_fields->pendingPressResponse = true;
+                m_fields->pendingPressSample = snapshot.solverSampleID;
+                m_fields->pendingPressY = snapshot.player.y;
+                m_fields->pendingPressVy = snapshot.player.velocityY;
+            }
         }
         m_fields->performance.input.add(elapsedMs(inputStart));
 
