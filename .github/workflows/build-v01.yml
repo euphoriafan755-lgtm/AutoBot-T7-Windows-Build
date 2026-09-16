@@ -1,4 +1,4 @@
-name: AutoBot T7 v0.1 Model Truth Build
+name: AutoBot T7 v0.1 General Solver Build
 
 on:
   workflow_dispatch:
@@ -25,11 +25,21 @@ jobs:
           printf 'NOT_RUN\n' > ci-logs/general-solver-result.txt
           printf 'NOT_RUN\n' > ci-logs/model-truth-result.txt
           printf 'NOT_RUN\n' > ci-logs/action-countdown-result.txt
+          printf 'NOT_RUN\n' > ci-logs/general-world-result.txt
+          printf 'NOT_RUN\n' > ci-logs/portal-aware-result.txt
+          printf 'NOT_RUN\n' > ci-logs/trigger-result.txt
+          printf 'NOT_RUN\n' > ci-logs/dual-result.txt
+          printf 'NOT_RUN\n' > ci-logs/benchmark-result.txt
           printf 'NOT_RUN\n' > ci-logs/configure-exit-code.txt
           printf 'NOT_RUN\n' > ci-logs/build-exit-code.txt
           : > ci-logs/static-tests.log
           : > ci-logs/model-truth-tests.log
           : > ci-logs/action-countdown-test.log
+          : > ci-logs/general-world-planner-test.log
+          : > ci-logs/portal-aware-future-test.log
+          : > ci-logs/trigger-causal-test.log
+          : > ci-logs/dual-joint-test.log
+          : > ci-logs/unseen-benchmark-test.log
           : > ci-logs/configure.log
           : > ci-logs/build.log
           HEAD_SHA="$(git rev-parse HEAD)"
@@ -71,7 +81,7 @@ jobs:
             echo "GEODE_SDK=$GEODE_SDK"
           } 2>&1 | tee ci-logs/toolchain.txt
 
-      - name: Run invariant and Model Truth gates
+      - name: Run general solver static gates
         shell: bash
         run: |
           set -euo pipefail
@@ -81,28 +91,60 @@ jobs:
             echo "=== $name ===" | tee -a ci-logs/static-tests.log
             "$@" 2>&1 | tee -a ci-logs/static-tests.log
           }
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/SpatialHashInvariantTest.cpp src/world/SpatialHash.cpp -o ci-tests/spatial.exe
+          CXX=(clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude)
+
+          "${CXX[@]}" tests/SpatialHashInvariantTest.cpp src/world/SpatialHash.cpp -o ci-tests/spatial.exe
           run_test SPATIAL_HASH_INVARIANTS ./ci-tests/spatial.exe
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/CollisionWorldInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/CollisionQueryAudit.cpp -o ci-tests/collision.exe
+          "${CXX[@]}" tests/CollisionWorldInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/CollisionQueryAudit.cpp -o ci-tests/collision.exe
           run_test COLLISION_WORLD_QUERY_INVARIANTS ./ci-tests/collision.exe
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/DynamicColliderSyncInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp -o ci-tests/dynamic.exe
+          "${CXX[@]}" tests/DynamicColliderSyncInvariantTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp -o ci-tests/dynamic.exe
           run_test DYNAMIC_COLLIDER_SYNC_INVARIANTS ./ci-tests/dynamic.exe
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/InputControllerStateMachineTest.cpp -o ci-tests/input.exe
+          "${CXX[@]}" tests/InputControllerStateMachineTest.cpp -o ci-tests/input.exe
           run_test INPUT_CONTROLLER_STATE_MACHINE ./ci-tests/input.exe
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/GeneralSolverInvariantTest.cpp src/solver/ActionGenerator.cpp src/solver/PhysicsModels.cpp src/solver/TrajectoryScorer.cpp -o ci-tests/general-solver.exe
+          "${CXX[@]}" tests/GeneralSolverInvariantTest.cpp src/solver/ActionGenerator.cpp src/solver/AdaptiveSearchBudget.cpp src/solver/PhysicsModels.cpp src/solver/TrajectoryScorer.cpp -o ci-tests/general-solver.exe
           run_test GENERAL_SOLVER_INVARIANTS ./ci-tests/general-solver.exe
           printf 'PASS\n' > ci-logs/general-solver-result.txt
 
-          COMMON="src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/solver/LocalWorldView.cpp src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp src/solver/ActionGenerator.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp"
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/ModelTruthTest.cpp $COMMON -o ci-tests/model-truth.exe
+          COMMON=(
+            src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp
+            src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp
+            src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp
+            src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp
+          )
+          "${CXX[@]}" tests/ModelTruthTest.cpp "${COMMON[@]}" -o ci-tests/model-truth.exe
           echo '=== MODEL_TRUTH_TESTS ===' | tee -a ci-logs/static-tests.log ci-logs/model-truth-tests.log
           ./ci-tests/model-truth.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/model-truth-tests.log
           printf 'PASS\n' > ci-logs/model-truth-result.txt
 
-          clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude tests/ActionCountdownTest.cpp $COMMON -o ci-tests/action-countdown.exe
+          "${CXX[@]}" tests/ActionCountdownTest.cpp "${COMMON[@]}" -o ci-tests/action-countdown.exe
           echo '=== ACTION_COUNTDOWN_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/action-countdown-test.log
           ./ci-tests/action-countdown.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/action-countdown-test.log
           printf 'PASS\n' > ci-logs/action-countdown-result.txt
+
+          "${CXX[@]}" tests/GeneralWorldPlannerTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/solver/LocalWorldView.cpp src/solver/AdaptiveSearchBudget.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp -o ci-tests/general-world.exe
+          echo '=== GENERAL_WORLD_PLANNER_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/general-world-planner-test.log
+          ./ci-tests/general-world.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/general-world-planner-test.log
+          printf 'PASS\n' > ci-logs/general-world-result.txt
+
+          "${CXX[@]}" tests/PortalAwareFutureTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp -o ci-tests/portal-aware.exe
+          echo '=== PORTAL_AWARE_FUTURE_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/portal-aware-future-test.log
+          ./ci-tests/portal-aware.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/portal-aware-future-test.log
+          printf 'PASS\n' > ci-logs/portal-aware-result.txt
+
+          "${CXX[@]}" tests/TriggerCausalSimulationTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/TriggerWorldModel.cpp -o ci-tests/trigger-causal.exe
+          echo '=== TRIGGER_CAUSAL_SIMULATION_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/trigger-causal-test.log
+          ./ci-tests/trigger-causal.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/trigger-causal-test.log
+          printf 'PASS\n' > ci-logs/trigger-result.txt
+
+          "${CXX[@]}" tests/DualJointPlannerTest.cpp src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp -o ci-tests/dual-joint.exe
+          echo '=== DUAL_JOINT_TESTS ===' | tee -a ci-logs/static-tests.log ci-logs/dual-joint-test.log
+          ./ci-tests/dual-joint.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/dual-joint-test.log
+          printf 'PASS\n' > ci-logs/dual-result.txt
+
+          "${CXX[@]}" tests/UnseenBenchmarkHarnessTest.cpp src/benchmark/UnseenBenchmark.cpp -o ci-tests/unseen-benchmark.exe
+          echo '=== UNSEEN_BENCHMARK_HARNESS_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/unseen-benchmark-test.log
+          ./ci-tests/unseen-benchmark.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/unseen-benchmark-test.log
+          printf 'PASS\n' > ci-logs/benchmark-result.txt
           printf 'PASS\n' > ci-logs/static-tests-result.txt
 
       - name: Configure and build real Geode mod
@@ -140,6 +182,11 @@ jobs:
           GENERAL="$(tr -d '\r\n ' < ci-logs/general-solver-result.txt 2>/dev/null)"
           MODEL="$(tr -d '\r\n ' < ci-logs/model-truth-result.txt 2>/dev/null)"
           COUNTDOWN="$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt 2>/dev/null)"
+          GENERAL_WORLD="$(tr -d '\r\n ' < ci-logs/general-world-result.txt 2>/dev/null)"
+          PORTAL_AWARE="$(tr -d '\r\n ' < ci-logs/portal-aware-result.txt 2>/dev/null)"
+          TRIGGER="$(tr -d '\r\n ' < ci-logs/trigger-result.txt 2>/dev/null)"
+          DUAL="$(tr -d '\r\n ' < ci-logs/dual-result.txt 2>/dev/null)"
+          BENCHMARK="$(tr -d '\r\n ' < ci-logs/benchmark-result.txt 2>/dev/null)"
           CONFIGURE="$(tr -d '\r\n ' < ci-logs/configure-exit-code.txt 2>/dev/null)"
           BUILD="$(tr -d '\r\n ' < ci-logs/build-exit-code.txt 2>/dev/null)"
           LINK=FAIL; PACKAGE=FAIL; SOURCE_BINARY=FAIL
@@ -147,7 +194,7 @@ jobs:
           grep -Fq 'Successfully packaged thiago7tv.autobot-t7.geode' ci-logs/build.log 2>/dev/null && [ -s ci-artifacts/AutoBot-T7-v0.1.geode ] && PACKAGE=PASS
           [ "$BUILD_COMMIT" = "$GITHUB_SHA" ] && [ "$ARCHIVE_CODE" -eq 0 ] && [ -s ci-artifacts/AutoBot-T7-v0.1-source.zip ] && SOURCE_BINARY=PASS
           cat > ci-artifacts/BUILD-REPORT.txt <<EOF
-          AUTOBOT T7 V0.1 - MODEL TRUTH FIX
+          AUTOBOT T7 V0.1 - GENERAL SOLVER FOUNDATION
           FINAL COMMIT: $GITHUB_SHA
           RUN ID: $GITHUB_RUN_ID
           BUILD COMMIT: $BUILD_COMMIT
@@ -155,6 +202,11 @@ jobs:
           GENERAL_SOLVER_INVARIANTS: $GENERAL
           MODEL_TRUTH_TESTS: $MODEL
           ACTION_COUNTDOWN_TEST: $COUNTDOWN
+          GENERAL_WORLD_PLANNER_TEST: $GENERAL_WORLD
+          PORTAL_AWARE_FUTURE_TEST: $PORTAL_AWARE
+          TRIGGER_CAUSAL_SIMULATION_TEST: $TRIGGER
+          DUAL_JOINT_TESTS: $DUAL
+          UNSEEN_BENCHMARK_HARNESS_TEST: $BENCHMARK
           REAL CONFIGURE: $CONFIGURE
           REAL COMPILE: $BUILD
           REAL LINK: $LINK
@@ -166,16 +218,31 @@ jobs:
           FALSE SAFE HISTORY: 120 samples
           HORIZON INCONCLUSIVE: NOT SAFE
           ACTION COUNTDOWN: absolute target sample; delayed PRESS cannot slide forward forever
+          GENERAL WORLD MODEL: STATIC VERIFIED; long-range event view and adaptive budget
+          GLOBAL PLANNER: STATIC VERIFIED; generic corridor beam search, no level name/ID input
+          DYNAMIC WORLD(t): STATIC VERIFIED; observed and causal gameplay geometry prediction
+          PORTAL-AWARE FUTURES: STATIC VERIFIED; multi-portal mode transitions can remain in one future trajectory
+          GAMEPLAY TRIGGER CAUSAL MODEL: STATIC VERIFIED; Move/Rotate/Scale/Toggle/Spawn/Follow/FollowPlayerY/Stop-Pause-Resume/TimeWarp/Gravity parsed generically; runtime verification pending
+          DUAL JOINT PLANNING: STATIC VERIFIED; P1+P2 joint survival/action ranking and legal independent input channels; runtime verification pending
+          UNSEEN BENCHMARK HARNESS: STATIC VERIFIED; no stored solution/click table
 
-          GENERAL SOLVER GAMEPLAY = PENDING USER RETEST
+          GENERAL SOLVER BUILD = PASS IF FINAL GATE PASSES
+          GENERAL SOLVER GAMEPLAY = PENDING RUNTIME
+          UNSEEN LEVEL BENCHMARK = PENDING RUNTIME
+          UNIVERSAL GD SOLVER = NOT YET VERIFIED
           MODEL TRUTH GATE = PENDING USER RETEST
           EOF
           cp ci-logs/build.log ci-artifacts/build.log
           cp ci-logs/model-truth-tests.log ci-artifacts/model-truth-test.log
           cp ci-logs/action-countdown-test.log ci-artifacts/action-countdown-test.log
+          cp ci-logs/general-world-planner-test.log ci-artifacts/general-world-planner-test.log
+          cp ci-logs/portal-aware-future-test.log ci-artifacts/portal-aware-future-test.log
+          cp ci-logs/trigger-causal-test.log ci-artifacts/trigger-causal-test.log
+          cp ci-logs/dual-joint-test.log ci-artifacts/dual-joint-test.log
+          cp ci-logs/unseen-benchmark-test.log ci-artifacts/unseen-benchmark-test.log
           mkdir -p ci-artifacts/ci-logs
           cp -R ci-logs/. ci-artifacts/ci-logs/
-          (cd ci-artifacts && : > SHA256SUMS.txt && for f in AutoBot-T7-v0.1.geode AutoBot-T7-v0.1-source.zip BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
+          (cd ci-artifacts && : > SHA256SUMS.txt && for f in AutoBot-T7-v0.1.geode AutoBot-T7-v0.1-source.zip BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log general-world-planner-test.log portal-aware-future-test.log trigger-causal-test.log dual-joint-test.log unseen-benchmark-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
           printf 'ARCHIVE_CODE=%s\nLINK=%s\nPACKAGE=%s\nSOURCE_BINARY=%s\n' "$ARCHIVE_CODE" "$LINK" "$PACKAGE" "$SOURCE_BINARY" > ci-logs/final-gate.txt
           exit 0
 
@@ -196,6 +263,11 @@ jobs:
           test "$(tr -d '\r\n ' < ci-logs/general-solver-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/model-truth-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/general-world-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/portal-aware-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/trigger-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/dual-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/benchmark-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/configure-exit-code.txt)" = 0
           test "$(tr -d '\r\n ' < ci-logs/build-exit-code.txt)" = 0
           grep -q '^LINK=PASS$' ci-logs/final-gate.txt
@@ -210,6 +282,14 @@ jobs:
           echo 'GENERAL_SOLVER_INVARIANTS=PASS'
           echo 'MODEL_TRUTH_TESTS=PASS'
           echo 'ACTION_COUNTDOWN_TEST=PASS'
+          echo 'GENERAL_WORLD_PLANNER_TEST=PASS'
+          echo 'PORTAL_AWARE_FUTURE_TEST=PASS'
+          echo 'GLOBAL_PLAN_PORTAL_CHAIN_TEST=PASS'
+          echo 'TRIGGER_CAUSAL_SIMULATION_TEST=PASS'
+          echo 'DUAL_JOINT_STATE_TEST=PASS'
+          echo 'DUAL_COLLISION_TEST=PASS'
+          echo 'DUAL_ACTION_SEARCH_TEST=PASS'
+          echo 'UNSEEN_BENCHMARK_HARNESS_TEST=PASS'
           echo 'REAL CONFIGURE=PASS'
           echo 'REAL COMPILE=PASS'
           echo 'REAL LINK=PASS'

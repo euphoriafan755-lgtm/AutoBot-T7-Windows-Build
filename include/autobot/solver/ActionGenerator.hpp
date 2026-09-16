@@ -1,6 +1,7 @@
 #pragma once
 
 #include "autobot/core/GameSnapshot.hpp"
+#include "autobot/solver/AdaptiveSearchBudget.hpp"
 #include "autobot/solver/SolverTypes.hpp"
 
 #include <cstddef>
@@ -13,6 +14,12 @@ public:
     [[nodiscard]] std::vector<ActionCandidate> generate(
         core::GameSnapshot const& snapshot,
         std::size_t horizonTicks
+    ) const;
+
+    [[nodiscard]] std::vector<ActionCandidate> generate(
+        core::GameSnapshot const& snapshot,
+        std::size_t horizonTicks,
+        SearchBudget const& budget
     ) const;
 
 private:

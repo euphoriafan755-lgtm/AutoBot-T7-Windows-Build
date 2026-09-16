@@ -17,6 +17,61 @@ enum class GameplayObjectType {
     Unknown,
 };
 
+
+enum class TriggerKind {
+    None,
+    Move,
+    Rotate,
+    Scale,
+    Toggle,
+    Spawn,
+    Follow,
+    FollowPlayerY,
+    Stop,
+    TimeWarp,
+    Gravity,
+};
+
+enum class TriggerCommandMode {
+    Stop,
+    Pause,
+    Resume,
+};
+
+struct TriggerDescriptor {
+    TriggerKind kind = TriggerKind::None;
+    TriggerCommandMode commandMode = TriggerCommandMode::Stop;
+    bool gameplayRelevant = false;
+    bool spawnTriggered = false;
+    bool touchTriggered = false;
+    bool multiTriggered = false;
+    bool uncertain = false;
+
+    int targetGroupID = 0;
+    int centerGroupID = 0;
+    double durationSeconds = 0.0;
+    double spawnDelaySeconds = 0.0;
+
+    double moveX = 0.0;
+    double moveY = 0.0;
+    double rotationDegrees = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    bool divideScaleX = false;
+    bool divideScaleY = false;
+
+    bool toggleOn = true;
+    double followXMod = 1.0;
+    double followYMod = 1.0;
+    double followYSpeed = 1.0;
+    double followYDelay = 0.0;
+    double followYOffset = 0.0;
+    double followYMaxSpeed = 0.0;
+
+    double timeWarp = 1.0;
+    double gravityValue = 1.0;
+};
+
 enum class V01Support {
     Supported,
     NotSupported,
@@ -71,6 +126,8 @@ struct WorldObject {
     bool flipY = false;
     bool slope = false;
     int groupCount = 0;
+    std::vector<int> groups;
+    TriggerDescriptor trigger{};
 };
 
 struct StaticWorld {

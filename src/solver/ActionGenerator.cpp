@@ -92,83 +92,119 @@ std::vector<ActionCandidate> ModeActionGenerator::generate(
     core::GameSnapshot const& snapshot,
     std::size_t horizonTicks
 ) const {
-    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 16, 160);
+    SearchBudget budget{};
+    return generate(snapshot, horizonTicks, budget);
+}
+
+std::vector<ActionCandidate> ModeActionGenerator::generate(
+    core::GameSnapshot const& snapshot,
+    std::size_t horizonTicks,
+    SearchBudget const& budget
+) const {
+    const std::size_t horizon = std::clamp<std::size_t>(
+        horizonTicks,
+        std::max<std::size_t>(16, budget.horizonMin),
+        std::max<std::size_t>(budget.horizonMin, budget.horizonMax)
+    );
+    const std::size_t delayMax = std::min<std::size_t>(
+        std::min<std::size_t>(budget.maxCandidateDelay, 48),
+        horizon > 0 ? horizon - 1 : 0
+    );
+    const std::size_t stride = std::max<std::size_t>(1, budget.candidateStride);
+
     std::vector<ActionCandidate> result;
-    result.reserve(10);
+    result.reserve(32);
+
+    auto addDelayed = [&](char const* prefix, std::size_t delay) {
+        ActionCandidate candidate = delayedTap("", delay, horizon);
+        if (delay == 0) candidate.label = std::string(prefix) + " NOW";
+        else candidate.label = std::string(prefix) + " +" + std::to_string(delay);
+        result.push_back(std::move(candidate));
+    };
+
+    auto addDelayFamily = [&](char const* noInputLabel, char const* pressPrefix) {
+        result.push_back(constant(noInputLabel, false, horizon));
+        addDelayed(pressPrefix, 0);
+
+        // Always keep the immediate precision window dense. Adaptive search
+        // adds farther candidates; it must not remove +1..+5 semantics that
+        // the committed-action countdown relies on.
+        const std::size_t denseEnd = std::min<std::size_t>(5, delayMax);
+        for (std::size_t delay = 1; delay <= denseEnd; ++delay) {
+            addDelayed(pressPrefix, delay);
+        }
+        if (delayMax > denseEnd) {
+            for (std::size_t delay = denseEnd + 1; delay <= delayMax; delay += stride) {
+                addDelayed(pressPrefix, delay);
+            }
+            const std::size_t tailStart = denseEnd + 1;
+            if (delayMax >= tailStart && ((delayMax - tailStart) % stride) != 0) {
+                addDelayed(pressPrefix, delayMax);
+            }
+        }
+    };
+
+    auto holdDurations = [&]() {
+        std::vector<std::size_t> values{2, 4, 8, 16};
+        if (budget.complexity >= 0.35) values.push_back(24);
+        if (budget.complexity >= 0.60) values.push_back(32);
+        if (budget.complexity >= 0.80) values.push_back(48);
+        values.erase(
+            std::remove_if(values.begin(), values.end(), [&](std::size_t v) {
+                return v >= horizon;
+            }),
+            values.end()
+        );
+        return values;
+    };
 
     switch (snapshot.player.mode) {
         case core::GameMode::Cube:
-            result.push_back(constant("NO PRESS", false, horizon));
-            result.push_back(delayedTap("PRESS NOW", 0, horizon));
-            result.push_back(delayedTap("PRESS +1", 1, horizon));
-            result.push_back(delayedTap("PRESS +2", 2, horizon));
-            result.push_back(delayedTap("PRESS +3", 3, horizon));
-            result.push_back(delayedTap("PRESS +4", 4, horizon));
-            result.push_back(delayedTap("PRESS +5", 5, horizon));
+            addDelayFamily("NO PRESS", "PRESS");
             break;
 
         case core::GameMode::Ship:
+        case core::GameMode::Wave: {
             result.push_back(constant("RELEASE", false, horizon));
             result.push_back(constant("HOLD", true, horizon));
-            result.push_back(holdThenRelease("HOLD->RELEASE 4", 4, horizon));
-            result.push_back(holdThenRelease("HOLD->RELEASE 8", 8, horizon));
-            result.push_back(holdThenRelease("HOLD->RELEASE 16", 16, horizon));
-            result.push_back(releaseThenHold("RELEASE->HOLD 4", 4, horizon));
-            result.push_back(releaseThenHold("RELEASE->HOLD 8", 8, horizon));
-            result.push_back(releaseThenHold("RELEASE->HOLD 16", 16, horizon));
+            for (auto duration : holdDurations()) {
+                auto a = holdThenRelease("", duration, horizon);
+                a.label = "HOLD->RELEASE " + std::to_string(duration);
+                result.push_back(std::move(a));
+                auto b = releaseThenHold("", duration, horizon);
+                b.label = "RELEASE->HOLD " + std::to_string(duration);
+                result.push_back(std::move(b));
+            }
             break;
+        }
 
         case core::GameMode::Ball:
-            result.push_back(constant("NO FLIP", false, horizon));
-            result.push_back(delayedTap("FLIP NOW", 0, horizon));
-            result.push_back(delayedTap("FLIP +1", 1, horizon));
-            result.push_back(delayedTap("FLIP +2", 2, horizon));
-            result.push_back(delayedTap("FLIP +4", 4, horizon));
-            result.push_back(delayedTap("FLIP +8", 8, horizon));
+            addDelayFamily("NO FLIP", "FLIP");
             break;
 
         case core::GameMode::Ufo:
-            result.push_back(constant("NO TAP", false, horizon));
-            result.push_back(delayedTap("TAP NOW", 0, horizon));
-            result.push_back(delayedTap("TAP +1", 1, horizon));
-            result.push_back(delayedTap("TAP +2", 2, horizon));
-            result.push_back(delayedTap("TAP +4", 4, horizon));
-            result.push_back(delayedTap("TAP +8", 8, horizon));
+            addDelayFamily("NO TAP", "TAP");
             break;
 
-        case core::GameMode::Wave:
-            result.push_back(constant("RELEASE", false, horizon));
-            result.push_back(constant("HOLD", true, horizon));
-            result.push_back(holdThenRelease("UP THEN DOWN 4", 4, horizon));
-            result.push_back(holdThenRelease("UP THEN DOWN 8", 8, horizon));
-            result.push_back(releaseThenHold("DOWN THEN UP 4", 4, horizon));
-            result.push_back(releaseThenHold("DOWN THEN UP 8", 8, horizon));
-            break;
-
-        case core::GameMode::Robot:
+        case core::GameMode::Robot: {
             result.push_back(constant("NO PRESS", false, horizon));
-            result.push_back(holdThenRelease("SHORT HOLD", 2, horizon));
-            result.push_back(holdThenRelease("MEDIUM HOLD", 6, horizon));
-            result.push_back(holdThenRelease("LONG HOLD", 14, horizon));
-            result.push_back(delayedTap("PRESS +2", 2, horizon));
-            result.push_back(delayedTap("PRESS +4", 4, horizon));
+            for (auto duration : holdDurations()) {
+                auto a = holdThenRelease("", duration, horizon);
+                a.label = "ROBOT HOLD " + std::to_string(duration);
+                result.push_back(std::move(a));
+            }
+            for (std::size_t delay = 0; delay <= delayMax; delay += stride) {
+                addDelayed("PRESS", delay);
+            }
             break;
+        }
 
         case core::GameMode::Spider:
-            result.push_back(constant("NO TELEPORT", false, horizon));
-            result.push_back(delayedTap("SURFACE NOW", 0, horizon));
-            result.push_back(delayedTap("SURFACE +1", 1, horizon));
-            result.push_back(delayedTap("SURFACE +2", 2, horizon));
-            result.push_back(delayedTap("SURFACE +4", 4, horizon));
+            addDelayFamily("NO TELEPORT", "SURFACE");
             break;
 
         case core::GameMode::Swing:
-            result.push_back(constant("NO INPUT", false, horizon));
-            result.push_back(delayedTap("FLIP NOW", 0, horizon));
-            result.push_back(delayedTap("FLIP +1", 1, horizon));
-            result.push_back(delayedTap("FLIP +2", 2, horizon));
-            result.push_back(delayedTap("FLIP +4", 4, horizon));
-            result.push_back(delayedTap("FLIP +8", 8, horizon));
+            addDelayFamily("NO INPUT", "FLIP");
             break;
 
         case core::GameMode::Unknown:

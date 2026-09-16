@@ -5,6 +5,9 @@
 #include "autobot/solver/PhysicsValidationHarness.hpp"
 #include "autobot/solver/RealtimePlanner.hpp"
 #include "autobot/world/CollisionWorld.hpp"
+#include "autobot/world/DynamicWorldModel.hpp"
+#include "autobot/world/TriggerWorldModel.hpp"
+#include "autobot/world/WorldObject.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +47,10 @@ struct SolverModelTruthSample {
     InputAction selectedInput = InputAction::SafeStop;
     std::string selectedLabel = "NONE";
     bool predictedDeath = false;
+    bool selectedConclusive = false;
+    bool dualMode = false;
+    std::vector<CandidateModelTruthTrace> p2Candidates;
+    std::size_t selectedP2Trajectory = std::numeric_limits<std::size_t>::max();
 };
 
 struct DeathCausalSnapshot {
@@ -79,6 +86,8 @@ struct AutonomousDecision {
     bool falseSafeDetected = false;
     DeathCausalSnapshot deathSnapshot{};
     ActionCountdownTrace countdown{};
+    ActionCountdownTrace p2Countdown{};
+    InputAction p2Action = InputAction::NoPress;
 
     solver::PlanDecision plan{};
 };
@@ -90,7 +99,13 @@ public:
         world::CollisionWorld const& collisionWorld,
         world::CollisionQueryResult const& query,
         bool enabled,
-        bool botHolding
+        bool botHolding,
+        bool botHoldingP2 = false
+    );
+
+    bool configureWorld(
+        world::StaticWorld const& source,
+        world::CollisionWorld const& collisionWorld
     );
 
     [[nodiscard]] solver::PhysicsValidationHarness const& validation() const {
@@ -140,20 +155,33 @@ private:
         AutonomousDecision& decision
     );
     void clearActionCountdown();
+    void applyP2ActionCountdown(
+        core::GameSnapshot const& snapshot,
+        bool botHoldingP2,
+        AutonomousDecision& decision
+    );
 
     solver::PhysicsValidationHarness m_validation{};
+    solver::PhysicsValidationHarness m_validationP2{};
     solver::RealtimePlanner m_planner{};
+    world::DynamicWorldModel m_dynamicWorld{};
+    world::TriggerWorldModel m_triggerWorld{};
 
     InputAction m_previousAction = InputAction::SafeStop;
     bool m_previousDesiredHold = false;
+    InputAction m_previousActionP2 = InputAction::SafeStop;
+    bool m_previousDesiredHoldP2 = false;
     bool m_hasPredictedNextState = false;
     solver::SimState m_predictedNextState{};
+    bool m_hasPredictedNextStateP2 = false;
+    solver::SimState m_predictedNextStateP2{};
 
     std::deque<SolverModelTruthSample> m_truthHistory{};
     std::size_t m_falseSafeTotal = 0;
     bool m_previousSnapshotValid = false;
     bool m_previousDead = false;
     PendingActionCountdown m_actionCountdown{};
+    PendingActionCountdown m_actionCountdownP2{};
 };
 
 [[nodiscard]] char const* toString(InputOwnership value);

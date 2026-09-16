@@ -11,7 +11,7 @@ class GameStateReader final {
 public:
     [[nodiscard]] static GameSnapshot capture(PlayLayer* playLayer, std::uint64_t gameTick);
 
-private:
+public:
     [[nodiscard]] static GameMode detectMode(PlayerObject const* player);
 };
 

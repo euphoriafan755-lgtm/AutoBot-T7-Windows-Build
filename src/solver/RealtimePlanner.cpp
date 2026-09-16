@@ -65,7 +65,8 @@ std::size_t RealtimePlanner::horizonTicks(
     core::GameSnapshot const& snapshot,
     LocalWorldView const& local,
     ModeCalibration const& calibration,
-    double requiredForwardDistance
+    double requiredForwardDistance,
+    SearchBudget const& budget
 ) {
     const double normalizedDt = calibration.normalizedStepDt();
     if (normalizedDt <= 0.0) return 0;
@@ -79,14 +80,22 @@ std::size_t RealtimePlanner::horizonTicks(
         distance = std::min(local.horizonX, distancePerSample * 96.0);
     }
     const double raw = distance / distancePerSample;
-    return static_cast<std::size_t>(std::clamp(std::ceil(raw), 24.0, 256.0));
+    return static_cast<std::size_t>(std::clamp(
+        std::ceil(raw),
+        static_cast<double>(budget.horizonMin),
+        static_cast<double>(budget.horizonMax)
+    ));
 }
 
 PlanDecision RealtimePlanner::plan(
     core::GameSnapshot const& snapshot,
     world::CollisionWorld const& collisionWorld,
     PhysicsValidationHarness const& validation,
-    bool botHolding
+    bool botHolding,
+    world::DynamicWorldModel const& dynamicWorld,
+    world::TriggerWorldModel const* triggerWorld,
+    bool botHoldingP2,
+    PhysicsValidationHarness const* p2Validation
 ) const {
     using Clock = std::chrono::steady_clock;
     const auto plannerStart = Clock::now();
@@ -128,6 +137,14 @@ PlanDecision RealtimePlanner::plan(
         finish();
         return decision;
     }
+    if (snapshot.dualMode && (!snapshot.player2Valid || snapshot.player2.mode == core::GameMode::Unknown)) {
+        decision.status = SolverStatus::Stopped;
+        decision.reason = "DUAL STATE INCOMPLETE";
+        decision.inputAction = control::InputAction::SafeStop;
+        decision.p2InputAction = control::InputAction::SafeStop;
+        finish();
+        return decision;
+    }
 
     const auto& calibration = validation.calibration(snapshot.player.mode);
     decision.physicsReady = validation.modeReady(snapshot.player.mode);
@@ -151,6 +168,87 @@ PlanDecision RealtimePlanner::plan(
     if (!local.complete) {
         decision.reason = "AUTOBOT WAITING FOR LOCAL WORLD";
         decision.inputAction = control::InputAction::SafeStop;
+        finish();
+        return decision;
+    }
+
+    auto generalWorld = m_generalWorldBuilder.build(
+        snapshot, collisionWorld, 1800.0, 1000.0
+    );
+    auto searchBudget = AdaptiveSearchBudget::choose(
+        snapshot, local, generalWorld, decision.lastModelError
+    );
+    if (searchBudget.globalLookaheadX > generalWorld.lookaheadX + 1.0
+        || searchBudget.globalLookaheadY > generalWorld.lookaheadY + 1.0) {
+        generalWorld = m_generalWorldBuilder.build(
+            snapshot,
+            collisionWorld,
+            searchBudget.globalLookaheadX,
+            searchBudget.globalLookaheadY
+        );
+        searchBudget = AdaptiveSearchBudget::choose(
+            snapshot, local, generalWorld, decision.lastModelError
+        );
+    }
+
+    const auto globalRoute = m_globalPlanner.plan(
+        snapshot, generalWorld, collisionWorld, searchBudget
+    );
+    decision.globalPlan.valid = globalRoute.valid;
+    decision.globalPlan.uncertain = globalRoute.uncertain;
+    decision.globalPlan.targetX = globalRoute.targetX;
+    decision.globalPlan.targetY = globalRoute.targetY;
+    decision.globalPlan.targetYMin = globalRoute.targetYMin;
+    decision.globalPlan.targetYMax = globalRoute.targetYMax;
+    decision.globalPlan.plannedForwardDistance = globalRoute.plannedForwardDistance;
+    decision.globalPlan.minimumCorridorClearance = globalRoute.minimumCorridorClearance;
+    decision.globalPlan.observedComplexity = searchBudget.complexity;
+    decision.globalPlan.globalLookaheadX = searchBudget.globalLookaheadX;
+    decision.globalPlan.globalLookaheadY = searchBudget.globalLookaheadY;
+    decision.globalPlan.routeSteps = globalRoute.steps.size();
+    decision.globalPlan.exploredStates = globalRoute.exploredStates;
+    decision.globalPlan.branchesConsidered = globalRoute.branchesConsidered;
+    decision.globalPlan.nextPortalPrimitive = globalRoute.nextPortalPrimitive;
+
+    if (snapshot.dualMode) {
+        decision.dualMode = true;
+        if (!p2Validation || !p2Validation->modeReady(snapshot.player2.mode)) {
+            decision.physicsReady = false;
+            decision.reason = "AUTOBOT WAITING FOR P2 PHYSICS UNIT CALIBRATION";
+            decision.inputAction = control::InputAction::SafeStop;
+            decision.p2InputAction = control::InputAction::SafeStop;
+            finish();
+            return decision;
+        }
+        auto joint = m_dualPlanner.plan(
+            snapshot, collisionWorld, validation, *p2Validation, botHolding, botHoldingP2,
+            dynamicWorld, triggerWorld, searchBudget
+        );
+        decision.physicsReady = validation.modeReady(snapshot.player.mode)
+            && p2Validation->modeReady(snapshot.player2.mode);
+        decision.plannerReady = joint.ready;
+        decision.active = joint.active;
+        decision.inputAction = joint.p1Action;
+        decision.p2InputAction = joint.p2Action;
+        decision.trajectories = std::move(joint.p1Trajectories);
+        decision.p2Trajectories = std::move(joint.p2Trajectories);
+        decision.selectedTrajectory = joint.selectedP1;
+        decision.selectedP2Trajectory = joint.selectedP2;
+        decision.jointPairsEvaluated = joint.pairs.size();
+        decision.hasPredictedNextState = joint.hasPredictedP1;
+        decision.predictedNextState = joint.predictedP1;
+        decision.hasPredictedNextStateP2 = joint.hasPredictedP2;
+        decision.predictedNextStateP2 = joint.predictedP2;
+        if (joint.active) {
+            decision.status = SolverStatus::Active;
+            decision.reason = "DUAL JOINT PLAN";
+        } else if (joint.ready) {
+            decision.status = SolverStatus::NoSafePath;
+            decision.reason = "DUAL NO JOINT SAFE PATH";
+        } else {
+            decision.status = SolverStatus::Waiting;
+            decision.reason = "DUAL JOINT PLANNER WAITING";
+        }
         finish();
         return decision;
     }
@@ -247,8 +345,24 @@ PlanDecision RealtimePlanner::plan(
         }
     }
 
+    if (globalRoute.valid) {
+        const double targetForward = direction * (globalRoute.targetX - snapshot.player.x);
+        if (targetForward > 0.0) {
+            // Global guidance influences how far the local MPC must prove the
+            // future, but never extends beyond the currently modelled local
+            // collision window.
+            const double globalRequirement = std::min(
+                targetForward + distancePerSample * 6.0,
+                local.horizonX * 0.95
+            );
+            requiredForwardDistance = std::max(requiredForwardDistance, globalRequirement);
+        }
+    }
+
     decision.modelTruth.requiredForwardDistance = requiredForwardDistance;
-    const auto horizon = horizonTicks(snapshot, local, calibration, requiredForwardDistance);
+    const auto horizon = horizonTicks(
+        snapshot, local, calibration, requiredForwardDistance, searchBudget
+    );
     decision.modelTruth.horizonTicks = horizon;
     decision.modelTruth.predictedHorizonSeconds = horizon * calibration.sampleDt;
     if (horizon == 0) {
@@ -259,7 +373,7 @@ PlanDecision RealtimePlanner::plan(
     }
 
     const auto generationStart = Clock::now();
-    auto candidates = m_actionGenerator.generate(snapshot, horizon);
+    auto candidates = m_actionGenerator.generate(snapshot, horizon, searchBudget);
     decision.candidateGenerationMs = std::chrono::duration<double, std::milli>(
         Clock::now() - generationStart
     ).count();
@@ -276,6 +390,8 @@ PlanDecision RealtimePlanner::plan(
     std::size_t bestIndex = std::numeric_limits<std::size_t>::max();
     double bestScore = -std::numeric_limits<double>::infinity();
     bool anyConclusiveNonFatal = false;
+    bool anyRouteCompatibleNonFatal = false;
+    int bestPriority = -1;
 
     for (auto const& candidate : candidates) {
         const auto simulationStart = Clock::now();
@@ -287,7 +403,9 @@ PlanDecision RealtimePlanner::plan(
             candidate,
             horizon,
             botHolding,
-            requiredForwardDistance
+            requiredForwardDistance,
+            &dynamicWorld,
+            triggerWorld
         );
         decision.physicsSimulationMs += std::chrono::duration<double, std::milli>(
             Clock::now() - simulationStart
@@ -303,10 +421,44 @@ PlanDecision RealtimePlanner::plan(
             anyConclusiveNonFatal = true;
         }
 
+        if (globalRoute.valid
+            && !trajectory.fatalCollision
+            && trajectory.horizonConclusive
+            && !trajectory.points.empty()) {
+            auto const& probe = trajectory.points.back();
+            if (probe.y < globalRoute.targetYMin) {
+                trajectory.globalRouteErrorY = globalRoute.targetYMin - probe.y;
+            } else if (probe.y > globalRoute.targetYMax) {
+                trajectory.globalRouteErrorY = probe.y - globalRoute.targetYMax;
+            } else {
+                trajectory.globalRouteErrorY = 0.0;
+                trajectory.globalRouteCompatible = true;
+            }
+        } else if (!globalRoute.valid) {
+            trajectory.globalRouteCompatible = true;
+            trajectory.globalRouteErrorY = 0.0;
+        }
+
+        if (!trajectory.fatalCollision
+            && trajectory.horizonConclusive
+            && trajectory.globalRouteCompatible) {
+            anyRouteCompatibleNonFatal = true;
+        }
+
         const auto index = decision.trajectories.size();
         decision.trajectories.push_back(std::move(trajectory));
 
-        if (score > bestScore) {
+        auto const& ranked = decision.trajectories[index];
+        int priority = 0;
+        if (!ranked.fatalCollision && ranked.horizonConclusive) {
+            priority = ranked.globalRouteCompatible ? 3 : 2;
+        } else if (!ranked.fatalCollision) {
+            priority = 1;
+        }
+        if (bestIndex == std::numeric_limits<std::size_t>::max()
+            || priority > bestPriority
+            || (priority == bestPriority && score > bestScore)) {
+            bestPriority = priority;
             bestScore = score;
             bestIndex = index;
         }
@@ -337,9 +489,13 @@ PlanDecision RealtimePlanner::plan(
     decision.inputAction = firstInput(selected.candidate, botHolding);
     decision.active = true;
 
-    if (anyConclusiveNonFatal && !selected.fatalCollision) {
+    if (anyConclusiveNonFatal && !selected.fatalCollision
+        && (!globalRoute.valid || anyRouteCompatibleNonFatal)) {
         decision.status = SolverStatus::Active;
         decision.reason = selected.candidate.label;
+    } else if (globalRoute.valid && anyConclusiveNonFatal && !selected.fatalCollision) {
+        decision.status = SolverStatus::NoSafePath;
+        decision.reason = "GLOBAL ROUTE UNRESOLVED - EXECUTING LEAST-BAD LEGAL ACTION";
     } else {
         decision.status = SolverStatus::NoSafePath;
         decision.reason = "NO SAFE PATH - EXECUTING LEAST-BAD LEGAL ACTION";

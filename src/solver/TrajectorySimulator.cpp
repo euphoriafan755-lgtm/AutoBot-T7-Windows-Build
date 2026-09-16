@@ -68,11 +68,11 @@ bool canLand(core::GameMode mode) {
 bool resolveSolidContact(
     SimState const& previous,
     SimState& current,
-    world::CollisionPrimitive const& primitive
+    world::WorldRect const& solidBounds
 ) {
     if (!canLand(current.mode)) return false;
 
-    const auto solid = edges(primitive.broadphaseBounds);
+    const auto solid = edges(solidBounds);
     const auto prevPlayer = playerEdges(previous);
     const auto curPlayer = playerEdges(current);
 
@@ -185,7 +185,9 @@ TrajectoryResult TrajectorySimulator::simulate(
     ActionCandidate const& candidate,
     std::size_t horizonTicks,
     bool initialHolding,
-    double requiredForwardDistance
+    double requiredForwardDistance,
+    world::DynamicWorldModel const* dynamicWorld,
+    world::TriggerWorldModel const* triggerWorld
 ) const {
     TrajectoryResult result{};
     result.candidate = candidate;
@@ -210,6 +212,10 @@ TrajectoryResult TrajectorySimulator::simulate(
     const double startX = state.x;
     const double direction = state.vx < -0.001 ? -1.0 : 1.0;
     bool desiredHoldPrevious = initialHolding;
+    auto triggerSimulation = triggerWorld && triggerWorld->ready()
+        ? triggerWorld->createSimulation()
+        : world::TriggerWorldModel::Simulation{};
+    const bool triggerSimulationReady = triggerWorld && triggerWorld->ready();
 
     const auto relevant = localPrimitiveIndices(localWorld);
     auto const& primitives = collisionWorld.primitives();
@@ -225,7 +231,7 @@ TrajectoryResult TrajectorySimulator::simulate(
         nearestHazardPtr = &nearestHazardBounds;
     }
 
-    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 8, 256);
+    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 8, 512);
     result.horizonTicks = horizon;
     result.points.reserve(horizon + 1);
     result.points.push_back(makePoint(
@@ -240,7 +246,8 @@ TrajectoryResult TrajectorySimulator::simulate(
 
         SimState previous = state;
         calibration = validation.calibration(state.mode);
-        const double modeDt = calibration.normalizedStepDt();
+        const double timeScale = triggerSimulationReady ? triggerSimulation.timeScale() : 1.0;
+        const double modeDt = calibration.normalizedStepDt() * timeScale;
         if (modeDt > 0.0) {
             state.sampleDt = modeDt;
             state.verticalPositionScale = calibration.yPositionScale();
@@ -249,6 +256,19 @@ TrajectoryResult TrajectorySimulator::simulate(
         auto const& model = m_registry.modelFor(state.mode);
         model.step(state, desiredHold, pressEdge, releaseEdge, context);
         state.holding = desiredHold;
+
+        if (triggerSimulationReady) {
+            const auto triggerEffects = triggerSimulation.step(
+                previous.x,
+                state.x,
+                state.y,
+                calibration.sampleDt
+            );
+            if (triggerEffects.gravityChanged) {
+                state.gravityModifier = triggerEffects.gravityValue;
+            }
+            result.uncertainGeometry = result.uncertainGeometry || triggerEffects.uncertain;
+        }
 
         bool pointCollision = false;
         bool pointHazard = false;
@@ -266,7 +286,30 @@ TrajectoryResult TrajectorySimulator::simulate(
                 || appliedPortals.contains(primitiveIndex)) {
                 continue;
             }
-            if (!intersects(player, edges(primitive.broadphaseBounds))) continue;
+            auto portalBounds = primitive.broadphaseBounds;
+            bool portalEnabled = primitive.enabled;
+            bool causalPortal = false;
+            if (triggerSimulationReady) {
+                const auto causal = triggerSimulation.predictPrimitive(primitiveIndex);
+                if (causal.available) {
+                    portalEnabled = causal.enabled;
+                    if (causal.causal) {
+                        portalBounds = causal.bounds;
+                        causalPortal = true;
+                        result.uncertainGeometry = result.uncertainGeometry || causal.uncertain;
+                    }
+                }
+            }
+            if (!causalPortal && dynamicWorld) {
+                const auto prediction = dynamicWorld->predict(
+                    collisionWorld, primitiveIndex, tick + 1
+                );
+                if (prediction.available) portalBounds = prediction.bounds;
+                if (prediction.dynamic && prediction.uncertain) {
+                    result.uncertainGeometry = true;
+                }
+            }
+            if (!portalEnabled || !intersects(player, edges(portalBounds))) continue;
 
             appliedPortals.insert(primitiveIndex);
             const auto application = PortalTransitionResolver::apply(primitive, state);
@@ -283,7 +326,23 @@ TrajectoryResult TrajectorySimulator::simulate(
         for (auto primitiveIndex : relevant) {
             if (primitiveIndex >= primitives.size()) continue;
             auto const& primitive = primitives[primitiveIndex];
-            if (!primitive.enabled || !primitive.indexable) continue;
+            if (!primitive.indexable) continue;
+
+            bool predictedEnabled = primitive.enabled;
+            bool causalBounds = false;
+            auto predictedBounds = primitive.broadphaseBounds;
+            if (triggerSimulationReady) {
+                const auto causal = triggerSimulation.predictPrimitive(primitiveIndex);
+                if (causal.available) {
+                    predictedEnabled = causal.enabled;
+                    if (causal.causal) {
+                        predictedBounds = causal.bounds;
+                        causalBounds = true;
+                        result.uncertainGeometry = result.uncertainGeometry || causal.uncertain;
+                    }
+                }
+            }
+            if (!predictedEnabled) continue;
 
             if (primitive.geometryVerification != world::GeometryVerification::Verified
                 && (primitive.classification == world::GameplayObjectType::Solid
@@ -291,7 +350,16 @@ TrajectoryResult TrajectorySimulator::simulate(
                 result.uncertainGeometry = true;
             }
 
-            const auto object = edges(primitive.broadphaseBounds);
+            if (!causalBounds && dynamicWorld) {
+                const auto prediction = dynamicWorld->predict(
+                    collisionWorld, primitiveIndex, tick + 1
+                );
+                if (prediction.available) predictedBounds = prediction.bounds;
+                if (prediction.dynamic && prediction.uncertain) {
+                    result.uncertainGeometry = true;
+                }
+            }
+            const auto object = edges(predictedBounds);
 
             if (primitive.classification == world::GameplayObjectType::Hazard) {
                 result.minimumClearance = std::min(
@@ -312,7 +380,7 @@ TrajectoryResult TrajectorySimulator::simulate(
 
             if (primitive.classification == world::GameplayObjectType::Solid
                 && intersects(player, object)) {
-                if (resolveSolidContact(previous, state, primitive)) {
+                if (resolveSolidContact(previous, state, predictedBounds)) {
                     result.landed = true;
                     pointLanding = true;
                     player = playerEdges(state);
@@ -343,8 +411,11 @@ TrajectoryResult TrajectorySimulator::simulate(
     result.predictedFinalX = state.x;
     result.predictedFinalY = state.y;
     result.finalMode = state.mode;
+    // Crossing a portal is not an end condition. A general solver must keep
+    // simulating through Cube -> Ship -> Wave (etc.) and validate the state
+    // after the transition. The horizon is conclusive only after reaching the
+    // requested forward objective or a real fatal event.
     result.relevantEventReached = result.fatalCollision
-        || result.portalCrossed
         || result.progress + 0.001 >= result.requiredForwardDistance;
     result.horizonConclusive = result.relevantEventReached;
 

@@ -6,13 +6,17 @@ using namespace geode::prelude;
 
 namespace autobot::control {
 
-bool InputController::queueJump(PlayLayer* playLayer, bool push, double timestamp) {
+bool InputController::queueJump(
+    PlayLayer* playLayer,
+    bool push,
+    bool player2,
+    double timestamp
+) {
     if (!playLayer) return false;
-
     playLayer->queueButton(
         static_cast<int>(PlayerButton::Jump),
         push,
-        false,
+        player2,
         timestamp
     );
     return true;
@@ -20,54 +24,100 @@ bool InputController::queueJump(PlayLayer* playLayer, bool push, double timestam
 
 void InputController::setBotControl(bool enabled, PlayLayer* playLayer, double timestamp) {
     if (!enabled) {
-        if (m_botHolding) release(playLayer, timestamp);
+        releasePlayer(false, playLayer, timestamp);
+        releasePlayer(true, playLayer, timestamp);
         m_ownership = InputOwnership::User;
         return;
     }
     m_ownership = InputOwnership::Bot;
 }
 
-bool InputController::apply(InputAction action, PlayLayer* playLayer, double timestamp) {
-    m_lastTransition = transition(m_botHolding, action);
-    m_lastQueueInvoked = false;
-    m_lastQueueSucceeded = true;
-    m_lastQueuePush = false;
+bool InputController::applyInternal(
+    InputAction action,
+    bool player2,
+    PlayLayer* playLayer,
+    double timestamp
+) {
+    auto& holding = player2 ? m_botHoldingP2 : m_botHoldingP1;
+    auto& lastTransition = player2 ? m_lastTransitionP2 : m_lastTransitionP1;
+    auto& lastQueueInvoked = player2 ? m_lastQueueInvokedP2 : m_lastQueueInvokedP1;
+    auto& lastQueueSucceeded = player2 ? m_lastQueueSucceededP2 : m_lastQueueSucceededP1;
+    auto& lastQueuePush = player2 ? m_lastQueuePushP2 : m_lastQueuePushP1;
+
+    lastTransition = transition(holding, action);
+    lastQueueInvoked = false;
+    lastQueueSucceeded = true;
+    lastQueuePush = false;
 
     if (m_ownership != InputOwnership::Bot || !playLayer) {
-        m_lastQueueSucceeded = false;
+        lastQueueSucceeded = false;
         return false;
     }
 
     bool ok = true;
-    if (m_lastTransition.emitPress) {
-        m_lastQueueInvoked = true;
-        m_lastQueuePush = true;
-        ok = queueJump(playLayer, true, timestamp) && ok;
+    if (lastTransition.emitPress) {
+        lastQueueInvoked = true;
+        lastQueuePush = true;
+        ok = queueJump(playLayer, true, player2, timestamp) && ok;
     }
-    if (m_lastTransition.emitRelease) {
-        m_lastQueueInvoked = true;
-        m_lastQueuePush = false;
-        ok = queueJump(playLayer, false, timestamp) && ok;
+    if (lastTransition.emitRelease) {
+        lastQueueInvoked = true;
+        lastQueuePush = false;
+        ok = queueJump(playLayer, false, player2, timestamp) && ok;
     }
-    m_lastQueueSucceeded = ok;
-    m_botHolding = m_lastTransition.nextHolding;
-
-    if (action == InputAction::SafeStop) {
-        m_ownership = InputOwnership::None;
-    }
+    lastQueueSucceeded = ok;
+    holding = lastTransition.nextHolding;
     return ok;
 }
 
-void InputController::release(PlayLayer* playLayer, double timestamp) {
-    m_lastTransition = transition(m_botHolding, InputAction::Release);
-    m_lastQueueInvoked = false;
-    m_lastQueueSucceeded = true;
-    m_lastQueuePush = false;
-    if (m_botHolding && playLayer) {
-        m_lastQueueInvoked = true;
-        m_lastQueueSucceeded = queueJump(playLayer, false, timestamp);
+bool InputController::apply(InputAction action, PlayLayer* playLayer, double timestamp) {
+    return applyInternal(action, false, playLayer, timestamp);
+}
+
+bool InputController::applyForPlayer(
+    InputAction action,
+    bool player2,
+    PlayLayer* playLayer,
+    double timestamp
+) {
+    return applyInternal(action, player2, playLayer, timestamp);
+}
+
+bool InputController::applyJoint(
+    InputAction p1,
+    InputAction p2,
+    PlayLayer* playLayer,
+    double timestamp
+) {
+    if (m_ownership != InputOwnership::Bot || !playLayer) return false;
+    const bool ok1 = applyInternal(p1, false, playLayer, timestamp);
+    const bool ok2 = applyInternal(p2, true, playLayer, timestamp);
+    if (p1 == InputAction::SafeStop && p2 == InputAction::SafeStop) {
+        m_ownership = InputOwnership::None;
     }
-    m_botHolding = false;
+    return ok1 && ok2;
+}
+
+void InputController::releasePlayer(bool player2, PlayLayer* playLayer, double timestamp) {
+    auto& holding = player2 ? m_botHoldingP2 : m_botHoldingP1;
+    auto& lastTransition = player2 ? m_lastTransitionP2 : m_lastTransitionP1;
+    auto& lastQueueInvoked = player2 ? m_lastQueueInvokedP2 : m_lastQueueInvokedP1;
+    auto& lastQueueSucceeded = player2 ? m_lastQueueSucceededP2 : m_lastQueueSucceededP1;
+    auto& lastQueuePush = player2 ? m_lastQueuePushP2 : m_lastQueuePushP1;
+
+    lastTransition = transition(holding, InputAction::Release);
+    lastQueueInvoked = false;
+    lastQueueSucceeded = true;
+    lastQueuePush = false;
+    if (holding && playLayer) {
+        lastQueueInvoked = true;
+        lastQueueSucceeded = queueJump(playLayer, false, player2, timestamp);
+    }
+    holding = false;
+}
+
+void InputController::release(PlayLayer* playLayer, double timestamp) {
+    releasePlayer(false, playLayer, timestamp);
 }
 
 } // namespace autobot::control

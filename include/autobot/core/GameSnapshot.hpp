@@ -77,6 +77,13 @@ struct GameSnapshot {
     double levelTime = 0.0;
     float levelProgress = 0.0f;
     PlayerState player{};
+
+    // Dual is represented as a joint runtime state. player remains P1 for
+    // backward compatibility; player2 is authoritative only when dualMode and
+    // player2Valid are true.
+    bool dualMode = false;
+    bool player2Valid = false;
+    PlayerState player2{};
 };
 
 } // namespace autobot::core

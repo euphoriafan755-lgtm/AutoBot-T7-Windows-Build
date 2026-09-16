@@ -135,6 +135,12 @@ struct TrajectoryResult {
     double predictedFinalY = 0.0;
     double score = -std::numeric_limits<double>::infinity();
     double confidence = 0.0;
+
+    // Global-route compatibility is evaluated by RealtimePlanner after the
+    // trajectory is simulated. It is a feasibility signal, not a level-
+    // specific score bonus.
+    bool globalRouteCompatible = false;
+    double globalRouteErrorY = std::numeric_limits<double>::infinity();
 };
 
 struct LocalWorldObject {
@@ -212,6 +218,25 @@ struct ModelTruthDiagnostics {
     std::size_t hazardHashCellCount = 0;
 };
 
+
+struct GlobalPlanDiagnostics {
+    bool valid = false;
+    bool uncertain = false;
+    double targetX = 0.0;
+    double targetY = 0.0;
+    double targetYMin = 0.0;
+    double targetYMax = 0.0;
+    double plannedForwardDistance = 0.0;
+    double minimumCorridorClearance = 0.0;
+    double observedComplexity = 0.0;
+    double globalLookaheadX = 0.0;
+    double globalLookaheadY = 0.0;
+    std::size_t routeSteps = 0;
+    std::size_t exploredStates = 0;
+    std::size_t branchesConsidered = 0;
+    std::size_t nextPortalPrimitive = world::kInvalidPrimitiveIndex;
+};
+
 struct PlanDecision {
     SolverStatus status = SolverStatus::Waiting;
     control::InputAction inputAction = control::InputAction::SafeStop;
@@ -232,10 +257,22 @@ struct PlanDecision {
     std::vector<TrajectoryResult> trajectories;
     std::size_t selectedTrajectory = std::numeric_limits<std::size_t>::max();
 
+    // Joint Dual planning keeps both players in the same PlanDecision. P1 uses
+    // the existing fields; these fields carry the independently simulated P2
+    // trajectory and legal input selected by the joint search.
+    bool dualMode = false;
+    control::InputAction p2InputAction = control::InputAction::NoPress;
+    std::vector<TrajectoryResult> p2Trajectories;
+    std::size_t selectedP2Trajectory = std::numeric_limits<std::size_t>::max();
+    std::size_t jointPairsEvaluated = 0;
+
     ModelError lastModelError{};
     ModelTruthDiagnostics modelTruth{};
+    GlobalPlanDiagnostics globalPlan{};
     bool hasPredictedNextState = false;
     SimState predictedNextState{};
+    bool hasPredictedNextStateP2 = false;
+    SimState predictedNextStateP2{};
 
     double candidateGenerationMs = 0.0;
     double physicsSimulationMs = 0.0;

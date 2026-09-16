@@ -183,7 +183,9 @@ int main() {
     assert(jumpScore > noPressScore);
 
     solver::RealtimePlanner planner{};
-    const auto plan = planner.plan(s2, collisionWorld, validation, false);
+    world::DynamicWorldModel dynamicWorld{};
+    dynamicWorld.observe(collisionWorld, s2.solverSampleID);
+    const auto plan = planner.plan(s2, collisionWorld, validation, false, dynamicWorld);
     auto const* plannedNoPress = findTrajectory(plan, "NO PRESS");
     assert(plannedNoPress != nullptr);
     assert(plannedNoPress->fatalCollision);

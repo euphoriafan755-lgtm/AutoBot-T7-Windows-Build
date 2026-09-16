@@ -106,6 +106,9 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             log::error("AutoBot T7: CollisionWorld build failed at PlayLayer::startGame lifecycle");
             return false;
         }
+        if (!m_fields->autonomousDriver.configureWorld(m_fields->world, m_fields->collisionWorld)) {
+            log::warn("AutoBot T7: TriggerWorldModel could not be built; causal trigger futures unavailable");
+        }
 
         auto const& metrics = m_fields->collisionWorld.metrics();
         auto const& benchmark = metrics.queryBenchmark;
@@ -393,7 +396,8 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->collisionWorld,
             query,
             autobotEnabled,
-            m_fields->inputController.botHolding()
+            m_fields->inputController.botHolding(),
+            m_fields->inputController.botHoldingP2()
         );
 
         if (decision.countdown.active || decision.countdown.fired) {
@@ -629,11 +633,13 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             if (decision.action == autobot::control::InputAction::Press) {
                 log::info("PLANNER SELECTED PRESS sample={}", snapshot.solverSampleID);
             }
-            inputApplied = m_fields->inputController.apply(
-                decision.action,
-                playLayer,
-                inputTimestamp
-            );
+            inputApplied = snapshot.dualMode
+                ? m_fields->inputController.applyJoint(
+                    decision.action, decision.p2Action, playLayer, inputTimestamp
+                )
+                : m_fields->inputController.apply(
+                    decision.action, playLayer, inputTimestamp
+                );
             auto const& transition = m_fields->inputController.lastTransition();
             if (m_fields->inputController.lastQueueInvoked()) {
                 log::info(
@@ -645,6 +651,19 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                     m_fields->inputController.lastQueuePush(),
                     m_fields->inputController.lastQueueSucceeded(),
                     m_fields->inputController.botHolding()
+                );
+            }
+            if (snapshot.dualMode && m_fields->inputController.lastQueueInvokedP2()) {
+                auto const& p2Transition = m_fields->inputController.lastTransitionP2();
+                log::info(
+                    "INPUT EXECUTION TRACE P2 sample={} requested={} effective={} queueButtonInvoked=YES push={} "
+                    "success={} holdingAfter={}",
+                    snapshot.solverSampleID,
+                    autobot::control::toString(decision.p2Action),
+                    autobot::control::toString(p2Transition.effectiveAction),
+                    m_fields->inputController.lastQueuePushP2(),
+                    m_fields->inputController.lastQueueSucceededP2(),
+                    m_fields->inputController.botHoldingP2()
                 );
             }
             if (transition.emitPress && inputApplied) {

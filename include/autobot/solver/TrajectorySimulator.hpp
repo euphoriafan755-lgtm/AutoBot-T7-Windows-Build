@@ -6,6 +6,8 @@
 #include "autobot/solver/PortalTransition.hpp"
 #include "autobot/solver/SolverTypes.hpp"
 #include "autobot/world/CollisionWorld.hpp"
+#include "autobot/world/DynamicWorldModel.hpp"
+#include "autobot/world/TriggerWorldModel.hpp"
 
 #include <cstddef>
 
@@ -21,7 +23,9 @@ public:
         ActionCandidate const& candidate,
         std::size_t horizonTicks,
         bool initialHolding,
-        double requiredForwardDistance
+        double requiredForwardDistance,
+        world::DynamicWorldModel const* dynamicWorld = nullptr,
+        world::TriggerWorldModel const* triggerWorld = nullptr
     ) const;
 
 private:
