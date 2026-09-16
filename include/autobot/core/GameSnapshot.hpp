@@ -37,11 +37,14 @@ struct PlayerState {
     double velocityX = 0.0;
     double velocityY = 0.0;
 
-    // Raw Geometry Dash values. Physics validation will determine how these
-    // compose into the exact simulator acceleration used later in V0.1.
     double gravity = 0.0;
     double gravityModifier = 1.0;
+    double jumpAcceleration = 0.0;
     double speed = 0.0;
+
+    // PlayerObject object bounds only; not claimed to equal exact gameplay hitbox.
+    double objectBoundsWidth = 0.0;
+    double objectBoundsHeight = 0.0;
 
     GameMode mode = GameMode::Unknown;
 
@@ -59,10 +62,8 @@ enum class TickSource {
 struct GameSnapshot {
     bool valid = false;
 
-    // V0.1 foundation: monotonically increasing sample sequence captured from
-    // GJBaseGameLayer::postUpdate. It is intentionally NOT claimed to be the
-    // exact internal physics tick until runtime timing validation is complete.
     std::uint64_t gameTick = 0;
+    std::uint64_t solverSampleID = 0;
     TickSource tickSource = TickSource::PostUpdateSequence;
     bool exactGameTickVerified = false;
 
