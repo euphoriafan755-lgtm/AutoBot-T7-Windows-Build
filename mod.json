@@ -7,7 +7,7 @@
   "name": "AutoBot T7",
   "version": "0.1.0",
   "developer": "Thiago7TV",
-  "description": "AutoBot T7 V0.1: runtime Collision World fixes plus autonomous Cube test driver.",
+  "description": "AutoBot T7 V0.1: general realtime solver with runtime CollisionWorld, per-mode physics, MPC replanning and trajectory visualization.",
   "settings": {
     "collision-debug-overlay": {
       "type": "bool",
@@ -35,9 +35,21 @@
     },
     "autobot-enabled": {
       "type": "bool",
-      "name": "AutoBot Autonomous Test Driver",
-      "description": "Lets AutoBot own Cube input using live GameState + CollisionWorld queries. Unsupported modes stop control safely. This is a test driver, not the full planner.",
+      "name": "AutoBot Enabled",
+      "description": "Enables the realtime General Solver. Input is emitted only after game state, world, mode physics and planner readiness gates are all satisfied.",
       "default": true
+    },
+    "show-trajectory": {
+      "type": "bool",
+      "name": "Show Trajectory",
+      "description": "Draws candidate trajectories and the selected path directly from the same TrajectorySimulator results consumed by the planner.",
+      "default": true
+    },
+    "solver-debug": {
+      "type": "bool",
+      "name": "Solver Debug",
+      "description": "Shows detailed solver scores, predictions, model error and planner timing without changing solver decisions.",
+      "default": false
     }
   }
 }
