@@ -13,6 +13,12 @@ bool InputController::queueJump(
     double timestamp
 ) {
     if (!playLayer) return false;
+    log::info(
+        "QUEUE_BUTTON_CALL button=JUMP push={} player={} timestamp={:.6f}",
+        push,
+        player2 ? "P2" : "P1",
+        timestamp
+    );
     playLayer->queueButton(
         static_cast<int>(PlayerButton::Jump),
         push,
