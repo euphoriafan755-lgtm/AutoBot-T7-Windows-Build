@@ -3,22 +3,50 @@
 #include <Geode/Geode.hpp>
 
 #include <cmath>
+#include <unordered_map>
 
 using namespace geode::prelude;
 
 namespace autobot::core {
+namespace {
+
+std::unordered_map<PlayerObject const*, GameMode> g_runtimeModes;
+
+GameMode fallbackModeFromFlags(PlayerObject const* player) {
+    if (!player) return GameMode::Unknown;
+
+    if (player->m_isBird) return GameMode::Ufo;
+    if (player->m_isDart) return GameMode::Wave;
+    if (player->m_isSwing) return GameMode::Swing;
+    if (player->m_isRobot) return GameMode::Robot;
+    if (player->m_isSpider) return GameMode::Spider;
+    if (player->m_isBall) return GameMode::Ball;
+    if (player->m_isShip) return GameMode::Ship;
+    return GameMode::Cube;
+}
+
+} // namespace
+
+void GameStateReader::resetRuntimeModes() {
+    g_runtimeModes.clear();
+}
+
+void GameStateReader::setRuntimeMode(PlayerObject const* player, GameMode mode) {
+    if (!player || mode == GameMode::Unknown) return;
+    g_runtimeModes[player] = mode;
+}
 
 GameMode GameStateReader::detectMode(PlayerObject const* player) {
     if (!player) return GameMode::Unknown;
 
-    if (player->m_isShip) return GameMode::Ship;
-    if (player->m_isBird) return GameMode::Ufo;
-    if (player->m_isBall) return GameMode::Ball;
-    if (player->m_isDart) return GameMode::Wave;
-    if (player->m_isRobot) return GameMode::Robot;
-    if (player->m_isSpider) return GameMode::Spider;
-    if (player->m_isSwing) return GameMode::Swing;
-    return GameMode::Cube;
+    if (auto const it = g_runtimeModes.find(player); it != g_runtimeModes.end()) {
+        return it->second;
+    }
+
+    // Fallback only. Normal PlayLayer runtime is seeded at startGame and then
+    // updated by PlayerObject::switchedToMode, so solver mode does not depend
+    // on direct bool-member reads.
+    return fallbackModeFromFlags(player);
 }
 
 namespace {
