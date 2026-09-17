@@ -67,9 +67,13 @@ struct DeathCausalSnapshot {
 struct ActionCountdownTrace {
     bool active = false;
     bool fired = false;
+    bool cancelled = false;
     std::uint64_t targetSampleID = 0;
+    std::uint64_t oldTargetSampleID = 0;
+    std::uint64_t newTargetSampleID = 0;
     std::size_t dueIn = 0;
     std::string label = "NONE";
+    std::string reason = "NONE";
 };
 
 struct AutonomousDecision {
