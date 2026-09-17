@@ -8,6 +8,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <vector>
 
 using autobot::core::GameMode;
 using autobot::solver::ActionCandidate;
@@ -21,6 +22,13 @@ using autobot::solver::TrajectoryResult;
 using autobot::solver::TrajectoryScorer;
 
 namespace {
+
+bool hasLabel(std::vector<ActionCandidate> const& candidates, std::string const& label) {
+    for (auto const& candidate : candidates) {
+        if (candidate.label == label) return true;
+    }
+    return false;
+}
 
 bool sameCandidate(ActionCandidate const& a, ActionCandidate const& b) {
     if (a.label != b.label || a.segments.size() != b.segments.size()) return false;
@@ -107,6 +115,21 @@ int main() {
     }};
 
     for (auto mode : modes) verifyMode(mode);
+
+    // Acceptance-contract guard: Cube must never be given continuous-flight
+    // RELEASE/HOLD candidates. It must expose the jump timing family used at
+    // the first Stereo Madness spike.
+    autobot::core::GameSnapshot cubeSnapshot{};
+    cubeSnapshot.valid = true;
+    cubeSnapshot.player.mode = GameMode::Cube;
+    ModeActionGenerator cubeGenerator{};
+    const auto cubeCandidates = cubeGenerator.generate(cubeSnapshot, 64);
+    assert(hasLabel(cubeCandidates, "NO PRESS"));
+    assert(hasLabel(cubeCandidates, "PRESS NOW"));
+    assert(hasLabel(cubeCandidates, "PRESS +1"));
+    assert(hasLabel(cubeCandidates, "PRESS +5"));
+    assert(!hasLabel(cubeCandidates, "RELEASE"));
+    assert(!hasLabel(cubeCandidates, "HOLD"));
 
     TrajectoryScorer scorer{};
 
