@@ -168,7 +168,37 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
 
     void startGame() {
         PlayLayer::startGame();
-        buildWorldFromGameplayLifecycle();
+        if (!buildWorldFromGameplayLifecycle()) {
+            log::error("NOT READY: full level world could not be built");
+            return;
+        }
+
+        const auto initialSnapshot = autobot::core::GameStateReader::capture(this, m_fields->tick);
+        const bool preRunReady = m_fields->autonomousDriver.preparePreRun(
+            initialSnapshot,
+            m_fields->world,
+            m_fields->collisionWorld,
+            [](autobot::presolve::PreRunStage stage) {
+                log::info("{}", autobot::presolve::toString(stage));
+            }
+        );
+        if (preRunReady) {
+            auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
+            log::info(
+                "PRE_RUN_VERIFIED_SOLUTION nodes={} completion={:.1f}% fatal={} unmodeled={} unresolved={}",
+                solution.nodes.size(),
+                solution.simulatedCompletion,
+                solution.fatalCollisions,
+                solution.unmodeledMechanics,
+                solution.unresolvedBranches
+            );
+            log::info("AUTOPLAY START");
+        } else {
+            log::warn(
+                "NOT READY: {}",
+                m_fields->autonomousDriver.preRunSolver().solution().reason
+            );
+        }
     }
 
     void postUpdate(float dt) {

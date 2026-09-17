@@ -30,7 +30,23 @@ bool AutonomousTestDriver::configureWorld(
     world::StaticWorld const& source,
     world::CollisionWorld const& collisionWorld
 ) {
+    m_preRun.reset();
     return m_triggerWorld.build(source, collisionWorld);
+}
+
+bool AutonomousTestDriver::preparePreRun(
+    core::GameSnapshot const& initialSnapshot,
+    world::StaticWorld const& source,
+    world::CollisionWorld const& collisionWorld,
+    presolve::PreRunSolver::StageCallback const& onStage
+) {
+    return m_preRun.prepare(
+        initialSnapshot,
+        source,
+        collisionWorld,
+        m_triggerWorld.ready() ? &m_triggerWorld : nullptr,
+        onStage
+    );
 }
 
 AutonomousTestDriver::HoldTransition AutonomousTestDriver::firstHoldTransition(
@@ -422,31 +438,104 @@ AutonomousDecision AutonomousTestDriver::decide(
         m_dynamicWorld.observe(collisionWorld, snapshot.solverSampleID);
     }
 
-    decision.plan = m_planner.plan(
-        snapshot,
-        collisionWorld,
-        m_validation,
-        botHolding,
-        m_dynamicWorld,
-        m_triggerWorld.ready() ? &m_triggerWorld : nullptr,
-        botHoldingP2,
-        snapshot.dualMode ? &m_validationP2 : nullptr
-    );
-
-    decision.action = decision.plan.inputAction;
-    decision.p2Action = decision.plan.p2InputAction;
-    decision.reason = decision.plan.reason;
-    decision.targetPrimitiveIndex = decision.plan.targetPrimitiveIndex;
-    decision.targetObjectID = decision.plan.targetObjectID;
-    decision.targetDistance = decision.plan.targetDistance;
-    decision.active = decision.plan.active;
-    decision.ownership = decision.active ? InputOwnership::Bot : InputOwnership::None;
-
-    applyActionCountdown(snapshot, botHolding, decision);
-    applyP2ActionCountdown(snapshot, botHoldingP2, decision);
-
-    if (snapshot.valid && !snapshot.player.dead) {
-        pushTruthSample(makeTruthSample(snapshot, decision.plan));
+    const bool unitHarnessWithoutPreRun = m_preRun.stage() == presolve::PreRunStage::Idle;
+    if (!m_preRun.ready() && !unitHarnessWithoutPreRun) {
+        decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
+        decision.plan.worldReady = collisionWorld.ready();
+        decision.plan.physicsReady = false;
+        decision.plan.plannerReady = false;
+        decision.plan.active = false;
+        decision.plan.status = solver::SolverStatus::Waiting;
+        decision.plan.inputAction = InputAction::SafeStop;
+        decision.plan.p2InputAction = InputAction::SafeStop;
+        decision.plan.reason = "PRE-RUN NOT READY: " + m_preRun.solution().reason;
+        decision.action = InputAction::SafeStop;
+        decision.p2Action = InputAction::SafeStop;
+        decision.reason = decision.plan.reason;
+        decision.active = false;
+        decision.ownership = InputOwnership::None;
+        clearActionCountdown();
+        m_actionCountdownP2 = {};
+    } else if (currentlyDead) {
+        decision.plan.gameStateReady = false;
+        decision.plan.worldReady = collisionWorld.ready();
+        decision.plan.physicsReady = true;
+        decision.plan.plannerReady = true;
+        decision.plan.status = solver::SolverStatus::Stopped;
+        decision.plan.reason = "PLAYER DEAD - WAITING FOR RESTART";
+        decision.action = InputAction::SafeStop;
+        decision.p2Action = InputAction::SafeStop;
+        decision.reason = decision.plan.reason;
+        decision.active = false;
+        decision.ownership = InputOwnership::None;
+        clearActionCountdown();
+        m_actionCountdownP2 = {};
+    } else {
+        const auto policy = m_preRun.policyFor(snapshot, botHolding, botHoldingP2);
+        if (policy.matched && !policy.desync) {
+            decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
+            decision.plan.worldReady = collisionWorld.ready();
+            decision.plan.physicsReady = true;
+            decision.plan.plannerReady = true;
+            decision.plan.active = true;
+            decision.plan.status = solver::SolverStatus::Active;
+            decision.plan.inputAction = policy.p1;
+            decision.plan.p2InputAction = policy.p2;
+            decision.plan.dualMode = snapshot.dualMode;
+            decision.plan.reason = policy.reason;
+            decision.action = policy.p1;
+            decision.p2Action = policy.p2;
+            decision.reason = policy.reason;
+            decision.active = true;
+            decision.ownership = InputOwnership::Bot;
+            clearActionCountdown();
+            m_actionCountdownP2 = {};
+        } else if (policy.desync || unitHarnessWithoutPreRun) {
+            // Production runtime reaches this planner only for recovery from a
+            // verified pre-run policy desynchronization. The Idle exception is
+            // retained solely for isolated regression harnesses that construct
+            // AutonomousTestDriver without the PlayLayer pre-run lifecycle.
+            decision.plan = m_planner.plan(
+                snapshot,
+                collisionWorld,
+                m_validation,
+                botHolding,
+                m_dynamicWorld,
+                m_triggerWorld.ready() ? &m_triggerWorld : nullptr,
+                botHoldingP2,
+                snapshot.dualMode ? &m_validationP2 : nullptr
+            );
+            decision.action = decision.plan.inputAction;
+            decision.p2Action = decision.plan.p2InputAction;
+            if (policy.desync) {
+                decision.reason = "DESYNC RECOVERY: " + decision.plan.reason;
+                decision.plan.reason = decision.reason;
+            } else {
+                decision.reason = decision.plan.reason;
+            }
+            decision.targetPrimitiveIndex = decision.plan.targetPrimitiveIndex;
+            decision.targetObjectID = decision.plan.targetObjectID;
+            decision.targetDistance = decision.plan.targetDistance;
+            decision.active = decision.plan.active;
+            decision.ownership = decision.active ? InputOwnership::Bot : InputOwnership::None;
+            applyActionCountdown(snapshot, botHolding, decision);
+            applyP2ActionCountdown(snapshot, botHoldingP2, decision);
+            if (snapshot.valid && !snapshot.player.dead) {
+                pushTruthSample(makeTruthSample(snapshot, decision.plan));
+            }
+        } else {
+            decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
+            decision.plan.worldReady = collisionWorld.ready();
+            decision.plan.physicsReady = true;
+            decision.plan.plannerReady = false;
+            decision.plan.status = solver::SolverStatus::Waiting;
+            decision.plan.reason = policy.reason;
+            decision.action = InputAction::SafeStop;
+            decision.p2Action = InputAction::SafeStop;
+            decision.reason = policy.reason;
+            decision.active = false;
+            decision.ownership = InputOwnership::None;
+        }
     }
 
     m_previousAction = decision.action;

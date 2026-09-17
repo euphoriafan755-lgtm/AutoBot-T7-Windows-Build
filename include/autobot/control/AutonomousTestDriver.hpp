@@ -2,6 +2,7 @@
 
 #include "autobot/control/InputController.hpp"
 #include "autobot/core/GameSnapshot.hpp"
+#include "autobot/presolve/PreRunSolver.hpp"
 #include "autobot/solver/PhysicsValidationHarness.hpp"
 #include "autobot/solver/RealtimePlanner.hpp"
 #include "autobot/world/CollisionWorld.hpp"
@@ -108,6 +109,15 @@ public:
         world::CollisionWorld const& collisionWorld
     );
 
+    bool preparePreRun(
+        core::GameSnapshot const& initialSnapshot,
+        world::StaticWorld const& source,
+        world::CollisionWorld const& collisionWorld,
+        presolve::PreRunSolver::StageCallback const& onStage = {}
+    );
+
+    [[nodiscard]] presolve::PreRunSolver const& preRunSolver() const { return m_preRun; }
+
     [[nodiscard]] solver::PhysicsValidationHarness const& validation() const {
         return m_validation;
     }
@@ -164,6 +174,7 @@ private:
     solver::PhysicsValidationHarness m_validation{};
     solver::PhysicsValidationHarness m_validationP2{};
     solver::RealtimePlanner m_planner{};
+    presolve::PreRunSolver m_preRun{};
     world::DynamicWorldModel m_dynamicWorld{};
     world::TriggerWorldModel m_triggerWorld{};
 
