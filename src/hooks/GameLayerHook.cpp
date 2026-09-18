@@ -1,4 +1,5 @@
 #include <Geode/Geode.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 
 #include "autobot/control/AutonomousTestDriver.hpp"
@@ -22,6 +23,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 
 using namespace geode::prelude;
 
@@ -31,7 +33,174 @@ using PerfClock = std::chrono::steady_clock;
 double elapsedMs(PerfClock::time_point start) {
     return std::chrono::duration<double, std::milli>(PerfClock::now() - start).count();
 }
+
+std::string_view gameObjectTypeName(int rawType) {
+    switch (static_cast<GameObjectType>(rawType)) {
+        case GameObjectType::Solid: return "Solid";
+        case GameObjectType::Hazard: return "Hazard";
+        case GameObjectType::InverseGravityPortal: return "InverseGravityPortal";
+        case GameObjectType::NormalGravityPortal: return "NormalGravityPortal";
+        case GameObjectType::ShipPortal: return "ShipPortal";
+        case GameObjectType::CubePortal: return "CubePortal";
+        case GameObjectType::Decoration: return "Decoration";
+        case GameObjectType::YellowJumpPad: return "YellowJumpPad";
+        case GameObjectType::PinkJumpPad: return "PinkJumpPad";
+        case GameObjectType::GravityPad: return "GravityPad";
+        case GameObjectType::YellowJumpRing: return "YellowJumpRing";
+        case GameObjectType::PinkJumpRing: return "PinkJumpRing";
+        case GameObjectType::GravityRing: return "GravityRing";
+        case GameObjectType::InverseMirrorPortal: return "InverseMirrorPortal";
+        case GameObjectType::NormalMirrorPortal: return "NormalMirrorPortal";
+        case GameObjectType::BallPortal: return "BallPortal";
+        case GameObjectType::RegularSizePortal: return "RegularSizePortal";
+        case GameObjectType::MiniSizePortal: return "MiniSizePortal";
+        case GameObjectType::UfoPortal: return "UfoPortal";
+        case GameObjectType::Modifier: return "Modifier";
+        case GameObjectType::Breakable: return "Breakable";
+        case GameObjectType::SecretCoin: return "SecretCoin";
+        case GameObjectType::DualPortal: return "DualPortal";
+        case GameObjectType::SoloPortal: return "SoloPortal";
+        case GameObjectType::Slope: return "Slope";
+        case GameObjectType::WavePortal: return "WavePortal";
+        case GameObjectType::RobotPortal: return "RobotPortal";
+        case GameObjectType::TeleportPortal: return "TeleportPortal";
+        case GameObjectType::GreenRing: return "GreenRing";
+        case GameObjectType::Collectible: return "Collectible";
+        case GameObjectType::UserCoin: return "UserCoin";
+        case GameObjectType::DropRing: return "DropRing";
+        case GameObjectType::SpiderPortal: return "SpiderPortal";
+        case GameObjectType::RedJumpPad: return "RedJumpPad";
+        case GameObjectType::RedJumpRing: return "RedJumpRing";
+        case GameObjectType::CustomRing: return "CustomRing";
+        case GameObjectType::DashRing: return "DashRing";
+        case GameObjectType::GravityDashRing: return "GravityDashRing";
+        case GameObjectType::CollisionObject: return "CollisionObject";
+        case GameObjectType::Special: return "Special";
+        case GameObjectType::SwingPortal: return "SwingPortal";
+        case GameObjectType::GravityTogglePortal: return "GravityTogglePortal";
+        case GameObjectType::SpiderOrb: return "SpiderOrb";
+        case GameObjectType::SpiderPad: return "SpiderPad";
+        case GameObjectType::EnterEffectObject: return "EnterEffectObject";
+        case GameObjectType::TeleportOrb: return "TeleportOrb";
+        case GameObjectType::AnimatedHazard: return "AnimatedHazard";
+    }
+    return "UnknownRawType";
 }
+
+struct AuthoritativeFreezeProbe {
+    PlayLayer* owner = nullptr;
+    bool active = false;
+    bool passLogged = false;
+    bool failLogged = false;
+    std::uint64_t gjBaseUpdateCalls = 0;
+    std::uint64_t playLayerPostUpdateCalls = 0;
+    std::uint64_t deathTransitions = 0;
+    bool lastDead = false;
+    autobot::presolve::FreezeInvariantSnapshot anchor{};
+    PerfClock::time_point started = PerfClock::now();
+};
+
+AuthoritativeFreezeProbe g_authoritativeFreeze{};
+
+autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
+    autobot::presolve::FreezeInvariantSnapshot snapshot{};
+    if (!layer) return snapshot;
+    if (layer->m_player1) snapshot.playerX = static_cast<double>(layer->m_player1->getRealPosition().x);
+    snapshot.progress = static_cast<double>(layer->getCurrentPercent());
+    snapshot.levelTime = static_cast<double>(layer->m_gameState.m_levelTime);
+    snapshot.attempts = layer->m_attempts;
+    snapshot.dead = layer->m_player1 ? layer->m_player1->m_isDead : false;
+    return snapshot;
+}
+
+void activateAuthoritativeFreeze(PlayLayer* layer) {
+    g_authoritativeFreeze = {};
+    g_authoritativeFreeze.owner = layer;
+    g_authoritativeFreeze.active = layer != nullptr;
+    g_authoritativeFreeze.anchor = captureAuthoritativeFreezeInvariant(layer);
+    g_authoritativeFreeze.lastDead = g_authoritativeFreeze.anchor.dead;
+    g_authoritativeFreeze.started = PerfClock::now();
+    if (layer) {
+        log::info(
+            "PRE_RUN_FREEZE_DRIVER authoritative=GJBaseGameLayer::update postUpdate=PlayLayer::postUpdate "
+            "playerX={:.6f} progress={:.6f} levelTime={:.6f} attempts={}",
+            g_authoritativeFreeze.anchor.playerX,
+            g_authoritativeFreeze.anchor.progress,
+            g_authoritativeFreeze.anchor.levelTime,
+            g_authoritativeFreeze.anchor.attempts
+        );
+    }
+}
+
+void releaseAuthoritativeFreeze(PlayLayer* layer) {
+    if (g_authoritativeFreeze.owner != layer) return;
+    g_authoritativeFreeze.active = false;
+}
+
+bool authoritativeFreezeOwns(GJBaseGameLayer* layer) {
+    return g_authoritativeFreeze.active
+        && g_authoritativeFreeze.owner
+        && static_cast<GJBaseGameLayer*>(g_authoritativeFreeze.owner) == layer;
+}
+
+void verifyAuthoritativeFreezeRuntime(PlayLayer* layer) {
+    if (!layer || !g_authoritativeFreeze.active || g_authoritativeFreeze.owner != layer) return;
+    const auto current = captureAuthoritativeFreezeInvariant(layer);
+    if (current.dead && !g_authoritativeFreeze.lastDead) ++g_authoritativeFreeze.deathTransitions;
+    g_authoritativeFreeze.lastDead = current.dead;
+
+    const double playerXDelta = current.playerX - g_authoritativeFreeze.anchor.playerX;
+    const double progressDelta = current.progress - g_authoritativeFreeze.anchor.progress;
+    const double levelTimeDelta = current.levelTime - g_authoritativeFreeze.anchor.levelTime;
+    const int attemptsDelta = current.attempts - g_authoritativeFreeze.anchor.attempts;
+    const bool holds = std::abs(playerXDelta) <= 0.0001
+        && std::abs(progressDelta) <= 0.0001
+        && std::abs(levelTimeDelta) <= 0.0001
+        && attemptsDelta == 0
+        && g_authoritativeFreeze.deathTransitions == 0
+        && !current.dead;
+
+    if (!holds && !g_authoritativeFreeze.failLogged) {
+        g_authoritativeFreeze.failLogged = true;
+        log::error(
+            "PRE_RUN_FREEZE_RUNTIME=FAIL playerXDelta={:.6f} levelTimeDelta={:.6f} progressDelta={:.6f} "
+            "deaths={} attemptsDelta={} GJBaseGameLayerUpdateCalls={} PlayLayerPostUpdateCalls={}",
+            playerXDelta,
+            levelTimeDelta,
+            progressDelta,
+            g_authoritativeFreeze.deathTransitions,
+            attemptsDelta,
+            g_authoritativeFreeze.gjBaseUpdateCalls,
+            g_authoritativeFreeze.playLayerPostUpdateCalls
+        );
+    }
+
+    if (holds && !g_authoritativeFreeze.passLogged && elapsedMs(g_authoritativeFreeze.started) >= 5000.0) {
+        g_authoritativeFreeze.passLogged = true;
+        log::info(
+            "PRE_RUN_FREEZE_RUNTIME=PASS playerXDelta=0 levelTimeDelta=0 progressDelta=0 deaths=0 attemptsDelta=0 "
+            "GJBaseGameLayerUpdateCalls={} PlayLayerPostUpdateCalls={}",
+            g_authoritativeFreeze.gjBaseUpdateCalls,
+            g_authoritativeFreeze.playLayerPostUpdateCalls
+        );
+    }
+}
+}
+
+class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
+    void update(float dt) {
+        if (authoritativeFreezeOwns(this)) {
+            ++g_authoritativeFreeze.gjBaseUpdateCalls;
+            auto* playLayer = g_authoritativeFreeze.owner;
+            if (playLayer) {
+                playLayer->m_isPaused = true;
+                verifyAuthoritativeFreezeRuntime(playLayer);
+            }
+            return;
+        }
+        GJBaseGameLayer::update(dt);
+    }
+};
 
 class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     struct Fields {
@@ -93,6 +262,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         m_fields->freezeFailLogged = false;
         m_fields->freezeAnchor = captureFreezeInvariant();
         m_fields->freezeStarted = PerfClock::now();
+        activateAuthoritativeFreeze(this);
         m_isPaused = true;
     }
 
@@ -272,10 +442,11 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         );
         for (auto const& audit : m_fields->world.unsupportedAudit) {
             log::warn(
-                "UNSUPPORTED_OBJECT_AUDIT objectID={} rawType={} x={:.3f} y={:.3f} classification={} "
+                "UNSUPPORTED_OBJECT_AUDIT objectID={} rawType={} rawTypeName={} x={:.3f} y={:.3f} classification={} "
                 "whyUnsupported={} gameplayRelevant={}",
                 audit.objectID,
                 audit.rawGameObjectType,
+                gameObjectTypeName(audit.rawGameObjectType),
                 audit.x,
                 audit.y,
                 autobot::world::toString(audit.classification),
@@ -324,6 +495,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                 solution.simulatedCompletion
             );
             m_fields->preRunFreezeActive = false;
+            releaseAuthoritativeFreeze(this);
             m_isPaused = false;
             log::info("AUTOPLAY START");
         } else {
@@ -347,19 +519,14 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         }
     }
 
-    void update(float dt) {
-        if (m_fields->preRunFreezeActive) {
-            m_isPaused = true;
-            verifyPreRunFreezeInvariant();
-            return;
-        }
-        PlayLayer::update(dt);
-    }
-
     void postUpdate(float dt) {
+        if (g_authoritativeFreeze.active && g_authoritativeFreeze.owner == this) {
+            ++g_authoritativeFreeze.playLayerPostUpdateCalls;
+        }
         if (m_fields->preRunFreezeActive) {
             m_isPaused = true;
             verifyPreRunFreezeInvariant();
+            verifyAuthoritativeFreezeRuntime(this);
             return;
         }
         PlayLayer::postUpdate(dt);

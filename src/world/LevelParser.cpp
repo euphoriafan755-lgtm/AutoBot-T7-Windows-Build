@@ -143,6 +143,45 @@ bool isSpeedPortalObjectID(int objectID) {
     }
 }
 
+bool isLegacyVisualOnlyObjectID(int objectID) {
+    // Legacy transition/background/color triggers alter presentation only.
+    // They are explicitly separated from gameplay mechanics so old official
+    // levels are not blocked merely because these objects use Modifier/Special
+    // runtime types in modern GD.
+    switch (objectID) {
+        case 27:
+        case 28:
+        case 29:
+        case 30:
+        case 42:
+        case 43:
+        case 104:
+        case 105:
+        case 221:
+        case 717:
+        case 718:
+        case 743:
+        case 744:
+        case 900:
+        case 915:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isExplicitGameplayNeutral(GameObjectType rawType, int objectID) {
+    if (isLegacyVisualOnlyObjectID(objectID)) return true;
+    switch (rawType) {
+        case GameObjectType::SecretCoin:
+        case GameObjectType::UserCoin:
+        case GameObjectType::EnterEffectObject:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool supportGameplayRelevant(WorldObject const& object) {
     // Unknown runtime object types are conservatively gameplay-relevant until
     // positively classified as neutral. Known trigger IDs are classified as
@@ -150,7 +189,28 @@ bool supportGameplayRelevant(WorldObject const& object) {
     return object.type != GameplayObjectType::Decoration;
 }
 
-std::string unsupportedReason(GameObjectType rawType, GameplayObjectType classification) {
+std::string unsupportedReason(
+    GameObjectType rawType,
+    int objectID,
+    GameplayObjectType classification,
+    V01Support support
+) {
+    if (support == V01Support::NonGameplay) {
+        if (isLegacyVisualOnlyObjectID(objectID)) {
+            return "LEGACY VISUAL/COLOR/TRANSITION OBJECT; GAMEPLAY-NEUTRAL";
+        }
+        switch (rawType) {
+            case GameObjectType::SecretCoin:
+                return "SECRET COIN; OPTIONAL COLLECTIBLE DOES NOT ALTER PLAYER PHYSICS";
+            case GameObjectType::UserCoin:
+                return "USER COIN; OPTIONAL COLLECTIBLE DOES NOT ALTER PLAYER PHYSICS";
+            case GameObjectType::EnterEffectObject:
+                return "ENTER EFFECT OBJECT; VISUAL-ONLY FOR PLAYER PHYSICS";
+            default:
+                return "EXPLICITLY CLASSIFIED GAMEPLAY-NEUTRAL";
+        }
+    }
+
     switch (rawType) {
         case GameObjectType::Breakable:
             return "BREAKABLE SOLID BEHAVIOR NOT MODELED";
@@ -261,6 +321,7 @@ GameplayObjectType LevelParser::classify(GameObjectType type, int objectID) {
 V01Support LevelParser::classifyV01Support(GameObjectType type, int objectID) {
     if (isSpeedPortalObjectID(objectID)) return V01Support::Supported;
     if (triggerKindForObjectID(objectID) != TriggerKind::None) return V01Support::Supported;
+    if (isExplicitGameplayNeutral(type, objectID)) return V01Support::NonGameplay;
 
     switch (type) {
         case GameObjectType::Solid:
@@ -388,16 +449,23 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
         if (!snapshotObjectAt(playLayer, objectArrayIndex, copy)) continue;
 
         incrementCount(world, copy.type);
-        if (copy.v01Support == V01Support::NotSupported) {
+        const auto rawType = static_cast<GameObjectType>(copy.rawGameObjectType);
+        const bool explicitNeutralAudit = copy.v01Support == V01Support::NonGameplay
+            && isExplicitGameplayNeutral(rawType, copy.objectID);
+        if (copy.v01Support == V01Support::NotSupported || explicitNeutralAudit) {
             UnsupportedGameplayAudit audit{};
             audit.objectID = copy.objectID;
             audit.rawGameObjectType = copy.rawGameObjectType;
             audit.x = copy.x;
             audit.y = copy.y;
             audit.classification = copy.type;
-            audit.gameplayRelevant = supportGameplayRelevant(copy);
+            audit.gameplayRelevant = copy.v01Support == V01Support::NotSupported
+                && supportGameplayRelevant(copy);
             audit.reason = unsupportedReason(
-                static_cast<GameObjectType>(copy.rawGameObjectType), copy.type
+                rawType,
+                copy.objectID,
+                copy.type,
+                copy.v01Support
             );
             world.unsupportedAudit.push_back(audit);
             if (audit.gameplayRelevant) ++world.unsupportedGameplay;

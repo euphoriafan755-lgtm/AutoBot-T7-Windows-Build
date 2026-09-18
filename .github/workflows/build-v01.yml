@@ -241,7 +241,7 @@ jobs:
           SOURCE / BINARY COMMIT MATCH: $SOURCE_BINARY
           REPRODUCIBILITY: $SOURCE_BINARY
 
-          ROOT CAUSE FIX: NOT READY now freezes PlayLayer update; FULL_SIMULATION replays the complete policy from the initial snapshot to GD's actual completion boundary; unsupported objects are audited and only proven gameplay mechanics block READY.
+          ROOT CAUSE FIX: NOT READY is gated at authoritative GJBaseGameLayer::update; legacy visual/color objects and optional coins are audited as gameplay-neutral while unresolved gameplay mechanics still block READY; FULL_POLICY_REPLAY remains unchanged.
           PRE_RUN_FREEZE_TEST: $PRESOLVER
           FULL_POLICY_REPLAY_TEST: $PRESOLVER
           BOT HOLD AUTHORITY: InputController::botHolding
