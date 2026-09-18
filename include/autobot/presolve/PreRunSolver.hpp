@@ -3,6 +3,7 @@
 #include "autobot/control/InputController.hpp"
 #include "autobot/core/GameSnapshot.hpp"
 #include "autobot/solver/PhysicsValidationHarness.hpp"
+#include "autobot/solver/TrajectorySimulator.hpp"
 #include "autobot/solver/RealtimePlanner.hpp"
 #include "autobot/solver/SolverTypes.hpp"
 #include "autobot/world/CollisionWorld.hpp"
@@ -11,6 +12,7 @@
 #include "autobot/world/WorldObject.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <string>
@@ -62,7 +64,12 @@ struct TriggerDependencyGraph {
 struct LevelWorldModel {
     bool complete = false;
     double startX = 0.0;
+    // endX is the actual GD completion boundary, never the last collider.
     double endX = 0.0;
+    double lastColliderX = 0.0;
+    double gdLevelLength = 0.0;
+    bool completionBoundaryValid = false;
+    bool completionSourcesConsistent = false;
     double direction = 1.0;
     std::size_t sourceObjects = 0;
     std::size_t collisionPrimitives = 0;
@@ -107,6 +114,8 @@ struct PreRunSolution {
     bool verified = false;
     bool ready = false;
     bool dual = false;
+    bool fullPolicyReplayPassed = false;
+    std::size_t replayTicks = 0;
     double simulatedCompletion = 0.0;
     std::size_t fatalCollisions = 0;
     std::size_t unresolvedBranches = 0;
@@ -114,6 +123,30 @@ struct PreRunSolution {
     std::vector<PlanNode> nodes;
     std::string reason = "NOT PREPARED";
 };
+
+struct FreezeInvariantSnapshot {
+    double playerX = 0.0;
+    double progress = 0.0;
+    double levelTime = 0.0;
+    int attempts = 0;
+    bool dead = false;
+};
+
+[[nodiscard]] inline bool shouldFreezeGameplay(PreRunStage stage) {
+    return stage != PreRunStage::Ready;
+}
+
+[[nodiscard]] inline bool freezeInvariantHolds(
+    FreezeInvariantSnapshot const& anchor,
+    FreezeInvariantSnapshot const& current,
+    double epsilon = 0.0001
+) {
+    return std::abs(current.playerX - anchor.playerX) <= epsilon
+        && std::abs(current.progress - anchor.progress) <= epsilon
+        && std::abs(current.levelTime - anchor.levelTime) <= epsilon
+        && current.attempts == anchor.attempts
+        && !current.dead;
+}
 
 struct PolicyDecision {
     bool ready = false;
@@ -197,7 +230,20 @@ private:
         world::CollisionWorld const& collisionWorld,
         world::TriggerWorldModel const* triggerWorld
     );
-    bool simulateAndVerify(core::GameSnapshot const& initialSnapshot);
+    bool simulateAndVerify(
+        core::GameSnapshot const& initialSnapshot,
+        world::CollisionWorld const& collisionWorld,
+        world::TriggerWorldModel const* triggerWorld
+    );
+    static solver::ActionCandidate concatenatePolicy(
+        std::vector<PlanNode> const& nodes,
+        bool player2,
+        std::size_t& totalTicks
+    );
+    static solver::LocalWorldView fullWorldView(
+        core::GameSnapshot const& snapshot,
+        world::CollisionWorld const& collisionWorld
+    );
 
     PreRunStage m_stage = PreRunStage::Idle;
     LevelWorldModel m_worldModel{};

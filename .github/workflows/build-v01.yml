@@ -137,6 +137,9 @@ jobs:
           grep -q '^FULL_WORLD_MODEL=PASS' ci-logs/full-presolve-test.log
           grep -q '^FULL_SOLUTION_SEARCH=PASS' ci-logs/full-presolve-test.log
           grep -q '^FULL_SIMULATION=PASS' ci-logs/full-presolve-test.log
+          grep -q '^FULL_POLICY_REPLAY_TEST=PASS' ci-logs/full-presolve-test.log
+          grep -q '^PRE_RUN_FREEZE_TEST=PASS' ci-logs/full-presolve-test.log
+          grep -q '^ACTUAL_LEVEL_COMPLETION_BOUNDARY_TEST=PASS' ci-logs/full-presolve-test.log
           grep -q '^PRE_RUN_VERIFIED_SOLUTION=PASS' ci-logs/full-presolve-test.log
           grep -q '^PRE_RUN_MODE_PORTAL_CHAIN=PASS' ci-logs/full-presolve-test.log
           grep -q '^PRE_RUN_DUAL_JOINT_POLICY=PASS' ci-logs/full-presolve-test.log
@@ -238,7 +241,9 @@ jobs:
           SOURCE / BINARY COMMIT MATCH: $SOURCE_BINARY
           REPRODUCIBILITY: $SOURCE_BINARY
 
-          ROOT CAUSE FIX: LevelParser no longer treats Unknown classification as proof of unsupported gameplay, and mode portals already modeled by PortalTransitionResolver/PhysicsModels are marked Supported.
+          ROOT CAUSE FIX: NOT READY now freezes PlayLayer update; FULL_SIMULATION replays the complete policy from the initial snapshot to GD's actual completion boundary; unsupported objects are audited and only proven gameplay mechanics block READY.
+          PRE_RUN_FREEZE_TEST: $PRESOLVER
+          FULL_POLICY_REPLAY_TEST: $PRESOLVER
           BOT HOLD AUTHORITY: InputController::botHolding
           FALSE SAFE HISTORY: 120 samples
           HORIZON INCONCLUSIVE: NOT SAFE
@@ -313,6 +318,9 @@ jobs:
           grep '^FULL_WORLD_MODEL=PASS' ci-logs/full-presolve-test.log
           grep '^FULL_SOLUTION_SEARCH=PASS' ci-logs/full-presolve-test.log
           grep '^FULL_SIMULATION=PASS' ci-logs/full-presolve-test.log
+          grep '^FULL_POLICY_REPLAY_TEST=PASS' ci-logs/full-presolve-test.log
+          grep '^PRE_RUN_FREEZE_TEST=PASS' ci-logs/full-presolve-test.log
+          grep '^ACTUAL_LEVEL_COMPLETION_BOUNDARY_TEST=PASS' ci-logs/full-presolve-test.log
           grep '^PRE_RUN_VERIFIED_SOLUTION=PASS' ci-logs/full-presolve-test.log
           grep '^PRE_RUN_MODE_PORTAL_CHAIN=PASS' ci-logs/full-presolve-test.log
           grep '^PRE_RUN_DUAL_JOINT_POLICY=PASS' ci-logs/full-presolve-test.log

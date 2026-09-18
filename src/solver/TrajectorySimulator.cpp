@@ -187,7 +187,9 @@ TrajectoryResult TrajectorySimulator::simulate(
     bool initialHolding,
     double requiredForwardDistance,
     world::DynamicWorldModel const* dynamicWorld,
-    world::TriggerWorldModel const* triggerWorld
+    world::TriggerWorldModel const* triggerWorld,
+    bool exactHorizon,
+    bool stopAtRequiredDistance
 ) const {
     TrajectoryResult result{};
     result.candidate = candidate;
@@ -231,7 +233,9 @@ TrajectoryResult TrajectorySimulator::simulate(
         nearestHazardPtr = &nearestHazardBounds;
     }
 
-    const std::size_t horizon = std::clamp<std::size_t>(horizonTicks, 8, 512);
+    const std::size_t horizon = exactHorizon
+        ? std::max<std::size_t>(horizonTicks, 1)
+        : std::clamp<std::size_t>(horizonTicks, 8, 512);
     result.horizonTicks = horizon;
     result.points.reserve(horizon + 1);
     result.points.push_back(makePoint(
@@ -405,6 +409,13 @@ TrajectoryResult TrajectorySimulator::simulate(
             nearestHazardPtr
         ));
         result.simulatedTicks = tick + 1;
+
+        const double replayProgress = direction * (state.x - startX);
+        if (stopAtRequiredDistance
+            && !result.fatalCollision
+            && replayProgress + 0.001 >= result.requiredForwardDistance) {
+            break;
+        }
     }
 
     result.progress = direction * (state.x - startX);

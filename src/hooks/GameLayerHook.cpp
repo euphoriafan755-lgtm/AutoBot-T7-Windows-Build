@@ -15,11 +15,13 @@
 #include "autobot/world/LevelParser.hpp"
 #include "autobot/world/ModeTransitionTrace.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string>
 
 using namespace geode::prelude;
 
@@ -47,6 +49,11 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         bool pendingPressResponse = false;
         bool runtimeAutoplayActiveLogged = false;
         bool firstRequiredActionLogged = false;
+        bool preRunFreezeActive = true;
+        bool freezePassLogged = false;
+        bool freezeFailLogged = false;
+        autobot::presolve::FreezeInvariantSnapshot freezeAnchor{};
+        PerfClock::time_point freezeStarted = PerfClock::now();
         std::uint64_t pendingPressSample = 0;
         double pendingPressY = 0.0;
         double pendingPressVy = 0.0;
@@ -69,6 +76,48 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         autobot::control::AutonomousTestDriver autonomousDriver{};
         autobot::core::SolverPerformanceMetrics performance{};
     };
+
+    autobot::presolve::FreezeInvariantSnapshot captureFreezeInvariant() {
+        autobot::presolve::FreezeInvariantSnapshot snapshot{};
+        if (m_player1) snapshot.playerX = static_cast<double>(m_player1->getRealPosition().x);
+        snapshot.progress = static_cast<double>(getCurrentPercent());
+        snapshot.levelTime = static_cast<double>(m_gameState.m_levelTime);
+        snapshot.attempts = m_attempts;
+        snapshot.dead = m_player1 ? m_player1->m_isDead : false;
+        return snapshot;
+    }
+
+    void beginPreRunFreeze() {
+        m_fields->preRunFreezeActive = true;
+        m_fields->freezePassLogged = false;
+        m_fields->freezeFailLogged = false;
+        m_fields->freezeAnchor = captureFreezeInvariant();
+        m_fields->freezeStarted = PerfClock::now();
+        m_isPaused = true;
+    }
+
+    void verifyPreRunFreezeInvariant() {
+        const auto current = captureFreezeInvariant();
+        const bool holds = autobot::presolve::freezeInvariantHolds(m_fields->freezeAnchor, current);
+        if (!holds && !m_fields->freezeFailLogged) {
+            m_fields->freezeFailLogged = true;
+            log::error(
+                "PRE_RUN_FREEZE_TEST=FAIL playerXDelta={:.6f} progressDelta={:.6f} levelTimeDelta={:.6f} "
+                "deaths={} attemptRestart={}",
+                current.playerX - m_fields->freezeAnchor.playerX,
+                current.progress - m_fields->freezeAnchor.progress,
+                current.levelTime - m_fields->freezeAnchor.levelTime,
+                current.dead ? 1 : 0,
+                current.attempts - m_fields->freezeAnchor.attempts
+            );
+        }
+        if (holds && !m_fields->freezePassLogged && elapsedMs(m_fields->freezeStarted) >= 1000.0) {
+            m_fields->freezePassLogged = true;
+            log::info(
+                "PRE_RUN_FREEZE_TEST=PASS playerXDelta=0 progressDelta=0 levelTimeDelta=0 deaths=0 attemptRestart=0"
+            );
+        }
+    }
 
     bool buildWorldFromGameplayLifecycle() {
         if (m_fields->parserAttempted) return m_fields->collisionWorld.ready();
@@ -169,14 +218,33 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     }
 
     void startGame() {
+        m_fields->preRunFreezeActive = true;
         PlayLayer::startGame();
-        if (!buildWorldFromGameplayLifecycle()) {
-            log::error("NOT READY: full level world could not be built");
-            return;
-        }
+        beginPreRunFreeze();
 
         m_fields->runtimeAutoplayActiveLogged = false;
         m_fields->firstRequiredActionLogged = false;
+        if (!m_fields->autonomousHUD.attached()) {
+            m_fields->autonomousHUD.attach(this);
+        }
+        m_fields->autonomousHUD.updatePreRun(
+            autobot::presolve::PreRunStage::ParsingLevel,
+            "BUILDING FULL LEVEL MODEL",
+            false,
+            0.0
+        );
+
+        if (!buildWorldFromGameplayLifecycle()) {
+            log::error("NOT READY: full level world could not be built");
+            m_fields->autonomousHUD.updatePreRun(
+                autobot::presolve::PreRunStage::NotReady,
+                "FULL LEVEL WORLD COULD NOT BE BUILT",
+                false,
+                0.0
+            );
+            return;
+        }
+
         log::info(
             "REAL_LEVEL_OBJECTS={} UNKNOWN={} UNSUPPORTED_GAMEPLAY={} PORTALS={}",
             m_fields->world.objects.size(),
@@ -184,6 +252,37 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->world.unsupportedGameplay,
             m_fields->world.portals
         );
+        double lastColliderX = 0.0;
+        bool hasCollider = false;
+        for (auto const& primitive : m_fields->collisionWorld.primitives()) {
+            if (!primitive.enabled) continue;
+            lastColliderX = hasCollider
+                ? std::max(lastColliderX, static_cast<double>(primitive.broadphaseBounds.x + primitive.broadphaseBounds.width))
+                : static_cast<double>(primitive.broadphaseBounds.x + primitive.broadphaseBounds.width);
+            hasCollider = true;
+        }
+        log::info(
+            "LEVEL_BOUNDARY ACTUAL_LEVEL_COMPLETION_BOUNDARY={:.3f} GD_LEVEL_LENGTH={:.3f} "
+            "WORLD_LAST_COLLIDER={:.3f} boundaryValid={} sourcesConsistent={}",
+            m_fields->world.completionBoundaryX,
+            m_fields->world.gdLevelLength,
+            hasCollider ? lastColliderX : 0.0,
+            m_fields->world.completionBoundaryValid,
+            m_fields->world.completionSourcesConsistent
+        );
+        for (auto const& audit : m_fields->world.unsupportedAudit) {
+            log::warn(
+                "UNSUPPORTED_OBJECT_AUDIT objectID={} rawType={} x={:.3f} y={:.3f} classification={} "
+                "whyUnsupported={} gameplayRelevant={}",
+                audit.objectID,
+                audit.rawGameObjectType,
+                audit.x,
+                audit.y,
+                autobot::world::toString(audit.classification),
+                audit.reason,
+                audit.gameplayRelevant ? "YES" : "NO"
+            );
+        }
 
         const auto initialSnapshot = autobot::core::GameStateReader::capture(this, m_fields->tick);
         log::info("PRE_SOLVER_CALLED=YES snapshotValid={}", initialSnapshot.valid);
@@ -191,26 +290,44 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             initialSnapshot,
             m_fields->world,
             m_fields->collisionWorld,
-            [](autobot::presolve::PreRunStage stage) {
-                log::info("{}", autobot::presolve::toString(stage));
+            [this](autobot::presolve::PreRunStage stage) {
+                log::info("PRE-RUN: {}", autobot::presolve::toString(stage));
+                auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
+                m_fields->autonomousHUD.updatePreRun(
+                    stage,
+                    stage == autobot::presolve::PreRunStage::NotReady ? solution.reason : "WORKING",
+                    solution.fullPolicyReplayPassed,
+                    solution.simulatedCompletion
+                );
             }
         );
+        auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
         if (preRunReady) {
-            auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
             log::info(
-                "PRE_RUN_VERIFIED_SOLUTION nodes={} completion={:.1f}% fatal={} unmodeled={} unresolved={}",
+                "PRE_RUN_VERIFIED_SOLUTION nodes={} completion={:.1f}% replay={} replayTicks={} fatal={} unmodeled={} unresolved={}",
                 solution.nodes.size(),
                 solution.simulatedCompletion,
+                solution.fullPolicyReplayPassed,
+                solution.replayTicks,
                 solution.fatalCollisions,
                 solution.unmodeledMechanics,
                 solution.unresolvedBranches
             );
+            log::info("FULL_POLICY_REPLAY_TEST=PASS");
             log::info("PRE_SOLVER_READY=YES");
             log::info("POLICY_NODES={}", solution.nodes.size());
             log::info("POLICY_ATTACHED_TO_DRIVER=YES");
+            m_fields->autonomousHUD.updatePreRun(
+                autobot::presolve::PreRunStage::Ready,
+                solution.reason,
+                solution.fullPolicyReplayPassed,
+                solution.simulatedCompletion
+            );
+            m_fields->preRunFreezeActive = false;
+            m_isPaused = false;
             log::info("AUTOPLAY START");
         } else {
-            auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
+            beginPreRunFreeze();
             log::warn(
                 "PRE_SOLVER_READY=NO reason={} unmodeled={} unresolved={} sourceUnsupported={} unknown={} portals={}",
                 solution.reason,
@@ -221,10 +338,30 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                 m_fields->world.portals
             );
             log::warn("NOT READY: {}", solution.reason);
+            m_fields->autonomousHUD.updatePreRun(
+                autobot::presolve::PreRunStage::NotReady,
+                solution.reason,
+                false,
+                solution.simulatedCompletion
+            );
         }
     }
 
+    void update(float dt) {
+        if (m_fields->preRunFreezeActive) {
+            m_isPaused = true;
+            verifyPreRunFreezeInvariant();
+            return;
+        }
+        PlayLayer::update(dt);
+    }
+
     void postUpdate(float dt) {
+        if (m_fields->preRunFreezeActive) {
+            m_isPaused = true;
+            verifyPreRunFreezeInvariant();
+            return;
+        }
         PlayLayer::postUpdate(dt);
 
         auto* playLayer = PlayLayer::get();

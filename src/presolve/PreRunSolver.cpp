@@ -106,6 +106,8 @@ std::size_t PreRunSolver::countUnmodeled(
     world::StaticWorld const& source,
     world::CollisionWorld const& collisionWorld
 ) {
+    // StaticWorld already counts each unsupported gameplay object exactly once.
+    // Do not double-count the same object again through its CollisionPrimitive.
     std::size_t count = source.unsupportedGameplay;
     for (auto const& object : source.objects) {
         if (unsupportedTrigger(object)) ++count;
@@ -115,6 +117,12 @@ std::size_t PreRunSolver::countUnmodeled(
             || primitive.classification == world::GameplayObjectType::Hazard
             || primitive.classification == world::GameplayObjectType::Portal;
         if (!gameplayCollision || !primitive.enabled || primitive.noTouch) continue;
+
+        if (primitive.support == world::V01Support::NotSupported) {
+            // Already represented by source.unsupportedGameplay.
+            continue;
+        }
+
         if (primitive.classification == world::GameplayObjectType::Portal) {
             const auto effect = solver::PortalTransitionResolver::resolve(primitive);
             if (effect == solver::PortalEffect::Unknown
@@ -126,8 +134,7 @@ std::size_t PreRunSolver::countUnmodeled(
             }
             continue;
         }
-        if (primitive.support == world::V01Support::NotSupported
-            || primitive.geometryVerification == world::GeometryVerification::NotSupported) {
+        if (primitive.geometryVerification == world::GeometryVerification::NotSupported) {
             ++count;
         }
     }
@@ -160,7 +167,11 @@ bool PreRunSolver::buildWorldModel(
 
     m_worldModel.startX = initialSnapshot.player.x;
     m_worldModel.direction = initialSnapshot.player.velocityX < -0.001 ? -1.0 : 1.0;
-    m_worldModel.endX = worldEndX(collisionWorld, m_worldModel.direction);
+    m_worldModel.lastColliderX = worldEndX(collisionWorld, m_worldModel.direction);
+    m_worldModel.endX = source.completionBoundaryX;
+    m_worldModel.gdLevelLength = source.gdLevelLength;
+    m_worldModel.completionBoundaryValid = source.completionBoundaryValid;
+    m_worldModel.completionSourcesConsistent = source.completionSourcesConsistent;
     m_worldModel.sourceObjects = source.objects.size();
     m_worldModel.collisionPrimitives = collisionWorld.primitives().size();
     m_worldModel.hazards = source.hazards;
@@ -171,7 +182,10 @@ bool PreRunSolver::buildWorldModel(
     }
 
     const double signedSpan = m_worldModel.direction * (m_worldModel.endX - m_worldModel.startX);
-    m_worldModel.complete = signedSpan >= -1.0 && m_worldModel.unmodeledMechanics == 0;
+    m_worldModel.complete = m_worldModel.completionBoundaryValid
+        && m_worldModel.completionSourcesConsistent
+        && signedSpan > 0.0
+        && m_worldModel.unmodeledMechanics == 0;
     return m_worldModel.complete;
 }
 
@@ -338,7 +352,7 @@ bool PreRunSolver::searchSolution(
     bool p1Holding = cursor.player.holding;
     bool p2Holding = cursor.player2Valid ? cursor.player2.holding : false;
     constexpr std::size_t kMaxNodes = 512;
-    constexpr double kFinishMargin = 16.0;
+    constexpr double kFinishMargin = 0.5;
 
     for (std::size_t nodeIndex = 0; nodeIndex < kMaxNodes; ++nodeIndex) {
         const double remaining = m_worldModel.direction * (m_worldModel.endX - cursor.player.x);
@@ -462,16 +476,95 @@ bool PreRunSolver::searchSolution(
     return false;
 }
 
-bool PreRunSolver::simulateAndVerify(core::GameSnapshot const& initialSnapshot) {
-    if (!m_solution.routeFound) return false;
-    if (m_solution.nodes.empty()) {
-        m_solution.simulatedCompletion = 100.0;
-        m_solution.simulationPassed = true;
-        m_solution.verified = true;
-        return true;
-    }
+solver::ActionCandidate PreRunSolver::concatenatePolicy(
+    std::vector<PlanNode> const& nodes,
+    bool player2,
+    std::size_t& totalTicks
+) {
+    solver::ActionCandidate result{};
+    result.label = player2 ? "FULL POLICY REPLAY P2" : "FULL POLICY REPLAY";
+    totalTicks = 0;
 
-    double furthest = initialSnapshot.player.x;
+    auto appendHold = [&](bool hold) {
+        constexpr auto kMaxTicks = std::numeric_limits<std::uint16_t>::max();
+        if (!result.segments.empty() && result.segments.back().hold == hold
+            && result.segments.back().ticks < kMaxTicks) {
+            ++result.segments.back().ticks;
+        } else {
+            result.segments.push_back({hold, 1});
+        }
+    };
+
+    for (auto const& node : nodes) {
+        auto const& policy = player2 ? node.p2Policy : node.p1Policy;
+        if (node.simulatedTicks == 0 || policy.segments.empty()) {
+            result.segments.clear();
+            totalTicks = 0;
+            return result;
+        }
+        for (std::size_t tick = 0; tick < node.simulatedTicks; ++tick) {
+            appendHold(policy.desiredHoldAt(tick));
+            ++totalTicks;
+        }
+    }
+    return result;
+}
+
+solver::LocalWorldView PreRunSolver::fullWorldView(
+    core::GameSnapshot const& snapshot,
+    world::CollisionWorld const& collisionWorld
+) {
+    solver::LocalWorldView view{};
+    if (!snapshot.valid || !collisionWorld.ready()) return view;
+
+    const double direction = snapshot.player.velocityX < -0.001 ? -1.0 : 1.0;
+    auto const& primitives = collisionWorld.primitives();
+    auto add = [&](std::size_t index, world::CollisionPrimitive const& primitive) {
+        if (!primitive.enabled || !primitive.indexable) return;
+        solver::LocalWorldObject object{};
+        object.primitiveIndex = index;
+        object.classification = primitive.classification;
+        object.bounds = primitive.broadphaseBounds;
+        object.forwardDistance = direction >= 0.0
+            ? std::max(0.0, static_cast<double>(primitive.broadphaseBounds.x) - snapshot.player.x)
+            : std::max(0.0, snapshot.player.x - static_cast<double>(primitive.broadphaseBounds.x + primitive.broadphaseBounds.width));
+        object.verticalDistance = 0.0;
+        object.potentiallyDynamic = primitive.potentiallyDynamic || primitive.observedDynamic;
+        object.verifiedGeometry =
+            primitive.geometryVerification == world::GeometryVerification::Verified;
+        switch (primitive.classification) {
+            case world::GameplayObjectType::Solid: view.solids.push_back(object); break;
+            case world::GameplayObjectType::Hazard: view.hazards.push_back(object); break;
+            case world::GameplayObjectType::Portal: view.portals.push_back(object); break;
+            case world::GameplayObjectType::Unknown: view.unknown.push_back(object); break;
+            default: break;
+        }
+    };
+
+    for (std::size_t i = 0; i < primitives.size(); ++i) add(i, primitives[i]);
+    auto byForward = [](solver::LocalWorldObject const& a, solver::LocalWorldObject const& b) {
+        if (a.forwardDistance != b.forwardDistance) return a.forwardDistance < b.forwardDistance;
+        return a.primitiveIndex < b.primitiveIndex;
+    };
+    std::sort(view.solids.begin(), view.solids.end(), byForward);
+    std::sort(view.hazards.begin(), view.hazards.end(), byForward);
+    std::sort(view.portals.begin(), view.portals.end(), byForward);
+    std::sort(view.unknown.begin(), view.unknown.end(), byForward);
+    view.horizonX = 1000000.0;
+    view.horizonY = 100000.0;
+    view.complete = true;
+    return view;
+}
+
+bool PreRunSolver::simulateAndVerify(
+    core::GameSnapshot const& initialSnapshot,
+    world::CollisionWorld const& collisionWorld,
+    world::TriggerWorldModel const* triggerWorld
+) {
+    m_solution.fullPolicyReplayPassed = false;
+    m_solution.replayTicks = 0;
+    if (!m_solution.routeFound) return false;
+
     for (std::size_t i = 0; i < m_solution.nodes.size(); ++i) {
         auto& node = m_solution.nodes[i];
         node.nextNode = i + 1 < m_solution.nodes.size()
@@ -480,38 +573,111 @@ bool PreRunSolver::simulateAndVerify(core::GameSnapshot const& initialSnapshot) 
         if (!node.expectedInitial.alive || !node.expectedFinal.alive
             || node.p1Policy.segments.empty() || node.simulatedTicks == 0) {
             ++m_solution.fatalCollisions;
-            m_solution.reason = "POLICY REPLAY CONTAINS INVALID OR FATAL NODE";
+            m_solution.reason = "FULL POLICY REPLAY HAS INVALID SEARCH NODE";
             return false;
         }
-        furthest = m_worldModel.direction >= 0.0
-            ? std::max(furthest, node.endX)
-            : std::min(furthest, node.endX);
     }
 
-    const double total = std::max(
-        1.0,
-        std::abs(m_worldModel.endX - m_worldModel.startX)
-    );
-    const double traversed = std::clamp(
-        m_worldModel.direction * (furthest - m_worldModel.startX),
-        0.0,
-        total
-    );
-    m_solution.simulatedCompletion = 100.0 * traversed / total;
-    if (m_worldModel.direction * (m_worldModel.endX - furthest) <= 16.0) {
-        m_solution.simulatedCompletion = 100.0;
-    }
-
-    m_solution.simulationPassed = m_solution.simulatedCompletion >= 99.999
-        && m_solution.fatalCollisions == 0;
-    m_solution.verified = m_solution.simulationPassed
-        && m_solution.unmodeledMechanics == 0
-        && m_solution.unresolvedBranches == 0;
-    if (!m_solution.verified) {
-        m_solution.reason = "PRE-RUN VERIFICATION GATE FAILED";
+    const double requiredForwardDistance =
+        m_worldModel.direction * (m_worldModel.endX - initialSnapshot.player.x);
+    if (requiredForwardDistance <= 0.0) {
+        m_solution.reason = "INVALID ACTUAL LEVEL COMPLETION BOUNDARY";
         return false;
     }
-    m_solution.reason = "PRE-RUN VERIFIED SOLUTION";
+
+    std::size_t p1Ticks = 0;
+    const auto p1Policy = concatenatePolicy(m_solution.nodes, false, p1Ticks);
+    if (p1Ticks == 0 || p1Policy.segments.empty()) {
+        m_solution.reason = "FULL POLICY REPLAY HAS NO EXECUTABLE P1 POLICY";
+        return false;
+    }
+
+    // Replay starts from the original initial snapshot and re-executes every
+    // policy sample. Search-node expectedFinal values are not used as state.
+    m_dynamicWorld.reset();
+    m_dynamicWorld.observe(collisionWorld, initialSnapshot.solverSampleID);
+    const auto completeWorld = fullWorldView(initialSnapshot, collisionWorld);
+    solver::TrajectorySimulator replaySimulator{};
+    const auto p1Replay = replaySimulator.simulate(
+        initialSnapshot,
+        collisionWorld,
+        completeWorld,
+        m_validation,
+        p1Policy,
+        p1Ticks,
+        initialSnapshot.player.holding,
+        requiredForwardDistance,
+        &m_dynamicWorld,
+        triggerWorld,
+        true,
+        true
+    );
+
+    m_solution.replayTicks = p1Replay.simulatedTicks;
+    if (p1Replay.fatalCollision) ++m_solution.fatalCollisions;
+    const double totalDistance = std::max(requiredForwardDistance, 0.001);
+    m_solution.simulatedCompletion = 100.0 * std::clamp(
+        p1Replay.progress / totalDistance, 0.0, 1.0
+    );
+
+    const bool p1ReachedBoundary = p1Replay.progress + 0.001 >= requiredForwardDistance;
+    const bool p1Pass = p1ReachedBoundary
+        && !p1Replay.fatalCollision
+        && p1Replay.simulatedTicks > 0;
+    if (!p1Pass) {
+        if (!p1ReachedBoundary) {
+            m_solution.reason = "FULL POLICY REPLAY DID NOT REACH ACTUAL LEVEL COMPLETION BOUNDARY";
+        } else if (p1Replay.fatalCollision) {
+            m_solution.reason = "FULL POLICY REPLAY HIT FATAL COLLISION";
+        } else {
+            m_solution.reason = "FULL POLICY REPLAY FAILED";
+        }
+        return false;
+    }
+
+    if (initialSnapshot.dualMode && initialSnapshot.player2Valid) {
+        std::size_t p2Ticks = 0;
+        const auto p2Policy = concatenatePolicy(m_solution.nodes, true, p2Ticks);
+        if (p2Ticks == 0 || p2Policy.segments.empty()) {
+            m_solution.reason = "FULL POLICY REPLAY HAS NO EXECUTABLE P2 POLICY";
+            return false;
+        }
+        auto p2Start = player2Snapshot(initialSnapshot);
+        const double p2Required = m_worldModel.direction * (m_worldModel.endX - p2Start.player.x);
+        const auto p2World = fullWorldView(p2Start, collisionWorld);
+        const auto p2Replay = replaySimulator.simulate(
+            p2Start,
+            collisionWorld,
+            p2World,
+            m_validationP2,
+            p2Policy,
+            p2Ticks,
+            p2Start.player.holding,
+            p2Required,
+            &m_dynamicWorld,
+            triggerWorld,
+            true,
+            true
+        );
+        if (p2Replay.fatalCollision) ++m_solution.fatalCollisions;
+        if (p2Replay.progress + 0.001 < p2Required
+            || p2Replay.fatalCollision) {
+            m_solution.reason = "FULL POLICY REPLAY FAILED FOR P2";
+            return false;
+        }
+    }
+
+    m_solution.simulatedCompletion = 100.0;
+    m_solution.fullPolicyReplayPassed = true;
+    m_solution.simulationPassed = true;
+    m_solution.verified = m_solution.unmodeledMechanics == 0
+        && m_solution.unresolvedBranches == 0
+        && m_solution.fatalCollisions == 0;
+    if (!m_solution.verified) {
+        m_solution.reason = "PRE-RUN VERIFICATION GATE FAILED AFTER FULL POLICY REPLAY";
+        return false;
+    }
+    m_solution.reason = "FULL POLICY REPLAY VERIFIED TO ACTUAL COMPLETION BOUNDARY";
     return true;
 }
 
@@ -533,7 +699,16 @@ bool PreRunSolver::prepare(
     setStage(PreRunStage::ModelingWorld, onStage);
     if (!buildWorldModel(initialSnapshot, source, collisionWorld)) {
         m_solution.unmodeledMechanics = m_worldModel.unmodeledMechanics;
-        m_solution.reason = "FULL WORLD MODEL INCOMPLETE OR HAS UNMODELED GAMEPLAY";
+        if (!m_worldModel.completionBoundaryValid) {
+            m_solution.reason = "ACTUAL LEVEL COMPLETION BOUNDARY UNAVAILABLE";
+        } else if (!m_worldModel.completionSourcesConsistent) {
+            m_solution.reason = "LEVEL COMPLETION SOURCES DISAGREE";
+        } else if (m_worldModel.unmodeledMechanics > 0) {
+            m_solution.reason = std::to_string(m_worldModel.unmodeledMechanics)
+                + " REQUIRED MECHANICS UNMODELED";
+        } else {
+            m_solution.reason = "FULL WORLD MODEL INCOMPLETE";
+        }
         setStage(PreRunStage::NotReady, onStage);
         return false;
     }
@@ -564,7 +739,7 @@ bool PreRunSolver::prepare(
     // hierarchical segment. The replay gate below checks the entire assembled
     // 0%-100% policy, not only the next realtime horizon.
     setStage(PreRunStage::Verifying, onStage);
-    if (!simulateAndVerify(initialSnapshot)) {
+    if (!simulateAndVerify(initialSnapshot, collisionWorld, triggerWorld)) {
         setStage(PreRunStage::NotReady, onStage);
         return false;
     }

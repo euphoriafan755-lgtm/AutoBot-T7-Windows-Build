@@ -25,7 +25,9 @@ public:
         bool initialHolding,
         double requiredForwardDistance,
         world::DynamicWorldModel const* dynamicWorld = nullptr,
-        world::TriggerWorldModel const* triggerWorld = nullptr
+        world::TriggerWorldModel const* triggerWorld = nullptr,
+        bool exactHorizon = false,
+        bool stopAtRequiredDistance = false
     ) const;
 
 private:

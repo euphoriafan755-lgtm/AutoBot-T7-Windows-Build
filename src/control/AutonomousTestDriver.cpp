@@ -384,6 +384,10 @@ AutonomousDecision AutonomousTestDriver::decide(
     AutonomousDecision decision{};
     decision.enabled = enabled;
     decision.falseSafeTotal = m_falseSafeTotal;
+    decision.preRunStage = m_preRun.stage();
+    decision.preRunReason = m_preRun.solution().reason;
+    decision.fullPolicyReplayPassed = m_preRun.solution().fullPolicyReplayPassed;
+    decision.simulatedCompletion = m_preRun.solution().simulatedCompletion;
 
     const bool currentlyDead = snapshot.valid && (snapshot.player.dead
         || (snapshot.dualMode && snapshot.player2Valid && snapshot.player2.dead));

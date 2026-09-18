@@ -90,6 +90,11 @@ struct AutonomousDecision {
     ActionCountdownTrace p2Countdown{};
     InputAction p2Action = InputAction::NoPress;
 
+    presolve::PreRunStage preRunStage = presolve::PreRunStage::Idle;
+    std::string preRunReason = "NOT PREPARED";
+    bool fullPolicyReplayPassed = false;
+    double simulatedCompletion = 0.0;
+
     solver::PlanDecision plan{};
 };
 

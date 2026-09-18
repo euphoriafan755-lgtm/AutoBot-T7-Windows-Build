@@ -130,10 +130,30 @@ struct WorldObject {
     TriggerDescriptor trigger{};
 };
 
+struct UnsupportedGameplayAudit {
+    int objectID = 0;
+    int rawGameObjectType = -1;
+    float x = 0.0f;
+    float y = 0.0f;
+    GameplayObjectType classification = GameplayObjectType::Unknown;
+    bool gameplayRelevant = false;
+    std::string reason;
+};
+
 struct StaticWorld {
     bool parsed = false;
     std::string error;
     std::vector<WorldObject> objects;
+    std::vector<UnsupportedGameplayAudit> unsupportedAudit;
+
+    // Geometry Dash runtime completion sources. getEndPosition().x is the
+    // authoritative completion boundary for classic levels; m_levelLength is
+    // retained as an independent runtime cross-check.
+    bool completionBoundaryValid = false;
+    bool completionSourcesConsistent = false;
+    double completionBoundaryX = 0.0;
+    double endPositionX = 0.0;
+    double gdLevelLength = 0.0;
 
     std::size_t solids = 0;
     std::size_t hazards = 0;

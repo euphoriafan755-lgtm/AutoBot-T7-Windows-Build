@@ -3,6 +3,7 @@
 #include <Geode/Geode.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -142,6 +143,52 @@ bool isSpeedPortalObjectID(int objectID) {
     }
 }
 
+bool supportGameplayRelevant(WorldObject const& object) {
+    // Unknown runtime object types are conservatively gameplay-relevant until
+    // positively classified as neutral. Known trigger IDs are classified as
+    // Supported separately and validated by the causal trigger model.
+    return object.type != GameplayObjectType::Decoration;
+}
+
+std::string unsupportedReason(GameObjectType rawType, GameplayObjectType classification) {
+    switch (rawType) {
+        case GameObjectType::Breakable:
+            return "BREAKABLE SOLID BEHAVIOR NOT MODELED";
+        case GameObjectType::YellowJumpPad:
+        case GameObjectType::PinkJumpPad:
+        case GameObjectType::GravityPad:
+        case GameObjectType::RedJumpPad:
+        case GameObjectType::SpiderPad:
+            return "PAD EFFECT NOT MODELED IN POLICY REPLAY";
+        case GameObjectType::YellowJumpRing:
+        case GameObjectType::PinkJumpRing:
+        case GameObjectType::GravityRing:
+        case GameObjectType::GreenRing:
+        case GameObjectType::DropRing:
+        case GameObjectType::RedJumpRing:
+        case GameObjectType::CustomRing:
+        case GameObjectType::DashRing:
+        case GameObjectType::GravityDashRing:
+        case GameObjectType::SpiderOrb:
+        case GameObjectType::TeleportOrb:
+            return "ORB EFFECT NOT MODELED IN POLICY REPLAY";
+        case GameObjectType::InverseMirrorPortal:
+        case GameObjectType::NormalMirrorPortal:
+            return "MIRROR PORTAL EFFECT NOT MODELED";
+        case GameObjectType::DualPortal:
+        case GameObjectType::SoloPortal:
+            return "DUAL/SOLO PORTAL TRANSITION NOT FULLY REPLAY-VERIFIED";
+        case GameObjectType::TeleportPortal:
+            return "TELEPORT PORTAL EFFECT NOT MODELED";
+        default:
+            break;
+    }
+    if (classification == GameplayObjectType::Unknown) {
+        return "UNKNOWN CLASSIFICATION; CONSERVATIVELY BLOCKS UNTIL PROVEN GAMEPLAY-NEUTRAL";
+    }
+    return "GAMEPLAY MECHANIC NOT MODELED";
+}
+
 void incrementCount(StaticWorld& world, GameplayObjectType type) {
     switch (type) {
         case GameplayObjectType::Solid: ++world.solids; break;
@@ -213,21 +260,13 @@ GameplayObjectType LevelParser::classify(GameObjectType type, int objectID) {
 
 V01Support LevelParser::classifyV01Support(GameObjectType type, int objectID) {
     if (isSpeedPortalObjectID(objectID)) return V01Support::Supported;
+    if (triggerKindForObjectID(objectID) != TriggerKind::None) return V01Support::Supported;
 
     switch (type) {
         case GameObjectType::Solid:
         case GameObjectType::Slope:
         case GameObjectType::Hazard:
         case GameObjectType::AnimatedHazard:
-        case GameObjectType::YellowJumpPad:
-        case GameObjectType::PinkJumpPad:
-        case GameObjectType::GravityPad:
-        case GameObjectType::RedJumpPad:
-        case GameObjectType::YellowJumpRing:
-        case GameObjectType::PinkJumpRing:
-        case GameObjectType::GravityRing:
-        case GameObjectType::GreenRing:
-        case GameObjectType::RedJumpRing:
         case GameObjectType::InverseGravityPortal:
         case GameObjectType::NormalGravityPortal:
         case GameObjectType::GravityTogglePortal:
@@ -326,19 +365,42 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
 
     const auto objectCount = static_cast<std::size_t>(playLayer->m_objects->count());
     world.objects.reserve(objectCount);
+    world.unsupportedAudit.reserve(objectCount / 8 + 1);
+
+    const auto endPosition = playLayer->getEndPosition();
+    world.endPositionX = static_cast<double>(endPosition.x);
+    world.gdLevelLength = static_cast<double>(playLayer->m_levelLength);
+    world.completionBoundaryX = world.endPositionX;
+    world.completionBoundaryValid = std::isfinite(world.endPositionX)
+        && std::abs(world.endPositionX) > 1.0;
+    if (std::isfinite(world.gdLevelLength) && world.gdLevelLength > 1.0
+        && world.completionBoundaryValid) {
+        const double tolerance = std::max(120.0, std::abs(world.endPositionX) * 0.05);
+        world.completionSourcesConsistent =
+            std::abs(world.gdLevelLength - world.endPositionX) <= tolerance;
+    } else {
+        // Only one usable runtime source is available; getEndPosition remains authoritative.
+        world.completionSourcesConsistent = world.completionBoundaryValid;
+    }
 
     for (std::size_t objectArrayIndex = 0; objectArrayIndex < objectCount; ++objectArrayIndex) {
         WorldObject copy{};
         if (!snapshotObjectAt(playLayer, objectArrayIndex, copy)) continue;
 
         incrementCount(world, copy.type);
-        // Unknown is a classification gap, not proof of a gameplay mechanic.
-        // Known gameplay types still block READY when V0.1 cannot model them.
-        // Gameplay-relevant triggers are validated separately by PreRunSolver.
-        if (copy.v01Support == V01Support::NotSupported
-            && copy.type != GameplayObjectType::Decoration
-            && copy.type != GameplayObjectType::Unknown) {
-            ++world.unsupportedGameplay;
+        if (copy.v01Support == V01Support::NotSupported) {
+            UnsupportedGameplayAudit audit{};
+            audit.objectID = copy.objectID;
+            audit.rawGameObjectType = copy.rawGameObjectType;
+            audit.x = copy.x;
+            audit.y = copy.y;
+            audit.classification = copy.type;
+            audit.gameplayRelevant = supportGameplayRelevant(copy);
+            audit.reason = unsupportedReason(
+                static_cast<GameObjectType>(copy.rawGameObjectType), copy.type
+            );
+            world.unsupportedAudit.push_back(audit);
+            if (audit.gameplayRelevant) ++world.unsupportedGameplay;
         }
         world.objects.push_back(copy);
     }
