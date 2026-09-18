@@ -230,7 +230,15 @@ V01Support LevelParser::classifyV01Support(GameObjectType type, int objectID) {
         case GameObjectType::RedJumpRing:
         case GameObjectType::InverseGravityPortal:
         case GameObjectType::NormalGravityPortal:
+        case GameObjectType::GravityTogglePortal:
         case GameObjectType::CubePortal:
+        case GameObjectType::ShipPortal:
+        case GameObjectType::BallPortal:
+        case GameObjectType::UfoPortal:
+        case GameObjectType::WavePortal:
+        case GameObjectType::RobotPortal:
+        case GameObjectType::SpiderPortal:
+        case GameObjectType::SwingPortal:
         case GameObjectType::RegularSizePortal:
         case GameObjectType::MiniSizePortal:
             return V01Support::Supported;
@@ -324,7 +332,12 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
         if (!snapshotObjectAt(playLayer, objectArrayIndex, copy)) continue;
 
         incrementCount(world, copy.type);
-        if (copy.v01Support == V01Support::NotSupported && copy.type != GameplayObjectType::Decoration) {
+        // Unknown is a classification gap, not proof of a gameplay mechanic.
+        // Known gameplay types still block READY when V0.1 cannot model them.
+        // Gameplay-relevant triggers are validated separately by PreRunSolver.
+        if (copy.v01Support == V01Support::NotSupported
+            && copy.type != GameplayObjectType::Decoration
+            && copy.type != GameplayObjectType::Unknown) {
             ++world.unsupportedGameplay;
         }
         world.objects.push_back(copy);

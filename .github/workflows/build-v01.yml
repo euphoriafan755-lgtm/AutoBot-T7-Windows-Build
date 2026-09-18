@@ -238,7 +238,7 @@ jobs:
           SOURCE / BINARY COMMIT MATCH: $SOURCE_BINARY
           REPRODUCIBILITY: $SOURCE_BINARY
 
-          ROOT CAUSE FIX: raw GD normalized velocity is converted using runtime-observed real dx / real dt / raw velocity; raw velocity is never directly multiplied by seconds.
+          ROOT CAUSE FIX: LevelParser no longer treats Unknown classification as proof of unsupported gameplay, and mode portals already modeled by PortalTransitionResolver/PhysicsModels are marked Supported.
           BOT HOLD AUTHORITY: InputController::botHolding
           FALSE SAFE HISTORY: 120 samples
           HORIZON INCONCLUSIVE: NOT SAFE

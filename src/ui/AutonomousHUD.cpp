@@ -104,6 +104,7 @@ void AutonomousHUD::update(
         "WORLD READY: {}\n"
         "PHYSICS READY: {}\n"
         "PLANNER READY: {}\n"
+        "STATUS: {}\n"
         "MODEL ERROR: {:.2f}{}",
         decision.active ? "ACTIVE" : "STOPPED",
         control::toString(decision.ownership),
@@ -117,6 +118,7 @@ void AutonomousHUD::update(
         plan.worldReady ? "YES" : "NO",
         plan.physicsReady ? "YES" : "NO",
         plan.plannerReady ? "YES" : "NO",
+        decision.reason.empty() ? plan.reason : decision.reason,
         modelError.magnitude(),
         modelMismatch ? " DIVERGENCE" : ""
     );

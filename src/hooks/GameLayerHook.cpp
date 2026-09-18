@@ -45,6 +45,8 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         std::size_t restartStabilitySamples = 0;
         double lastLevelTime = -1.0;
         bool pendingPressResponse = false;
+        bool runtimeAutoplayActiveLogged = false;
+        bool firstRequiredActionLogged = false;
         std::uint64_t pendingPressSample = 0;
         double pendingPressY = 0.0;
         double pendingPressVy = 0.0;
@@ -173,7 +175,18 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             return;
         }
 
+        m_fields->runtimeAutoplayActiveLogged = false;
+        m_fields->firstRequiredActionLogged = false;
+        log::info(
+            "REAL_LEVEL_OBJECTS={} UNKNOWN={} UNSUPPORTED_GAMEPLAY={} PORTALS={}",
+            m_fields->world.objects.size(),
+            m_fields->world.unknown,
+            m_fields->world.unsupportedGameplay,
+            m_fields->world.portals
+        );
+
         const auto initialSnapshot = autobot::core::GameStateReader::capture(this, m_fields->tick);
+        log::info("PRE_SOLVER_CALLED=YES snapshotValid={}", initialSnapshot.valid);
         const bool preRunReady = m_fields->autonomousDriver.preparePreRun(
             initialSnapshot,
             m_fields->world,
@@ -192,12 +205,22 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                 solution.unmodeledMechanics,
                 solution.unresolvedBranches
             );
+            log::info("PRE_SOLVER_READY=YES");
+            log::info("POLICY_NODES={}", solution.nodes.size());
+            log::info("POLICY_ATTACHED_TO_DRIVER=YES");
             log::info("AUTOPLAY START");
         } else {
+            auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
             log::warn(
-                "NOT READY: {}",
-                m_fields->autonomousDriver.preRunSolver().solution().reason
+                "PRE_SOLVER_READY=NO reason={} unmodeled={} unresolved={} sourceUnsupported={} unknown={} portals={}",
+                solution.reason,
+                solution.unmodeledMechanics,
+                solution.unresolvedBranches,
+                m_fields->world.unsupportedGameplay,
+                m_fields->world.unknown,
+                m_fields->world.portals
             );
+            log::warn("NOT READY: {}", solution.reason);
         }
     }
 
@@ -708,6 +731,23 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         if (readyForInput) {
             decision.ownership = m_fields->inputController.ownership();
             decision.active = decision.ownership == autobot::control::InputOwnership::Bot;
+            if (decision.active && !m_fields->runtimeAutoplayActiveLogged) {
+                m_fields->runtimeAutoplayActiveLogged = true;
+                log::info("AUTOPLAY_CONTROL=ACTIVE sample={}", snapshot.solverSampleID);
+            }
+            auto const& transition = m_fields->inputController.lastTransition();
+            if (inputApplied
+                && (transition.emitPress || transition.emitRelease)
+                && !m_fields->firstRequiredActionLogged) {
+                m_fields->firstRequiredActionLogged = true;
+                log::info(
+                    "FIRST_REQUIRED_ACTION=EXECUTED sample={} action={} queueSuccess={} holdingAfter={}",
+                    snapshot.solverSampleID,
+                    autobot::control::toString(transition.effectiveAction),
+                    m_fields->inputController.lastQueueSucceeded(),
+                    m_fields->inputController.botHolding()
+                );
+            }
         } else {
             decision.ownership = autobotEnabled
                 ? autobot::control::InputOwnership::None
