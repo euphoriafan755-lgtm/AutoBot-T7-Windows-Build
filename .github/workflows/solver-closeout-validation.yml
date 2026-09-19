@@ -76,6 +76,9 @@ jobs:
           "${CXX[@]}" tests/IncrementalExpansionBudgetTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/incremental-budget.exe
           ./ci-tests/incremental-budget.exe
 
+          "${CXX[@]}" tests/RuntimeSearchBootstrapTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/runtime-bootstrap.exe
+          ./ci-tests/runtime-bootstrap.exe
+
       - name: Existing solver gates
         shell: bash
         run: |
