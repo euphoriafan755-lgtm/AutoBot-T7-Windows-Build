@@ -13,13 +13,13 @@ int main() {
     SearchVisibleState visible{100.0, 0.0, 0.0, 1, false};
     live.reset(initial, visible);
 
-    // A real driver must expand while the visible root remains exactly frozen.
     auto stats = initial;
     stats.totalExpansions = 32;
     stats.frontierSize = 2;
     stats.uniqueStates = 3;
     auto r = live.observe(stats, visible, 0.2);
     assert(r.state == SearchLivenessState::Monitoring);
+
     stats.totalExpansions = 320;
     stats.currentDepth = 2;
     stats.frontierSize = 12;
@@ -28,23 +28,33 @@ int main() {
     r = live.observe(stats, visible, 2.1);
     assert(r.state == SearchLivenessState::Pass);
 
-    // Zero expansions after two seconds is a hard liveness failure.
+    // No work is recoverable: runtime should change strategy rather than die.
     live.reset(initial, visible);
     r = live.observe(initial, visible, 2.01);
-    assert(r.state == SearchLivenessState::Fail);
+    assert(r.state == SearchLivenessState::Stall);
     assert(r.reason.find("ZERO EXPANSIONS") != std::string::npos);
 
-    // 120 scheduled callbacks without expansion triggers the watchdog even earlier.
     live.reset(initial, visible);
     for (int i = 0; i < 119; ++i) {
         r = live.observe(initial, visible, 0.5);
         assert(r.state == SearchLivenessState::Monitoring);
     }
     r = live.observe(initial, visible, 0.5);
-    assert(r.state == SearchLivenessState::Fail);
-    assert(r.reason == "SEARCH DRIVER STALLED");
+    assert(r.state == SearchLivenessState::Stall);
+    assert(r.reason.find("NO EXPANSIONS") != std::string::npos);
 
-    // Search activity is not allowed to leak into the visible gameplay root.
+    // Expanding forever without improving best progress is also a strategy stall.
+    live.reset(initial, visible);
+    stats = initial;
+    for (int i = 1; i <= 300; ++i) {
+        stats.totalExpansions = static_cast<std::size_t>(i);
+        stats.frontierSize = 2 + static_cast<std::size_t>(i % 3);
+        r = live.observe(stats, visible, 0.01 * i);
+    }
+    assert(r.state == SearchLivenessState::Stall);
+    assert(r.reason.find("BEST-PROGRESS") != std::string::npos);
+
+    // Visible state movement is not recoverable: this is a real invariant failure.
     live.reset(initial, visible);
     auto moved = visible;
     moved.playerX += 0.25;
