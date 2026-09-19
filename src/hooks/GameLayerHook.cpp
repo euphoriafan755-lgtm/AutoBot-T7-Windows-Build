@@ -7,6 +7,7 @@
 #include "autobot/core/GameStateReader.hpp"
 #include "autobot/core/PerformanceMetrics.hpp"
 #include "autobot/presolve/UniversalRuntimeSession.hpp"
+#include "autobot/presolve/UniversalSearchRuntimeLiveness.hpp"
 #include "autobot/ui/AutonomousHUD.hpp"
 #include "autobot/ui/CollisionDebugOverlay.hpp"
 #include "autobot/ui/DiagnosticHUD.hpp"
@@ -104,6 +105,10 @@ struct AuthoritativeFreezeProbe {
 AuthoritativeFreezeProbe g_authoritativeFreeze{};
 bool g_universalInternalStep = false;
 autobot::presolve::UniversalRuntimeSession g_universalRuntime{};
+autobot::presolve::UniversalSearchRuntimeLiveness g_universalSearchLiveness{};
+PerfClock::time_point g_universalSearchLivenessStarted = PerfClock::now();
+bool g_universalSearchLivenessPassLogged = false;
+bool g_universalSearchLivenessFailLogged = false;
 autobot::ui::AutonomousHUD* g_universalHUD = nullptr;
 
 autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
@@ -115,6 +120,17 @@ autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(P
     snapshot.attempts = layer->m_attempts;
     snapshot.dead = layer->m_player1 ? layer->m_player1->m_isDead : false;
     return snapshot;
+}
+
+autobot::presolve::SearchVisibleState captureSearchVisibleState(PlayLayer* layer) {
+    autobot::presolve::SearchVisibleState state{};
+    if (!layer) return state;
+    if (layer->m_player1) state.playerX = static_cast<double>(layer->m_player1->getRealPosition().x);
+    state.progress = static_cast<double>(layer->getCurrentPercent());
+    state.levelTime = static_cast<double>(layer->m_gameState.m_levelTime);
+    state.attempts = layer->m_attempts;
+    state.dead = layer->m_player1 ? layer->m_player1->m_isDead : false;
+    return state;
 }
 
 void activateAuthoritativeFreeze(PlayLayer* layer) {
@@ -235,7 +251,10 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
         const bool universalOwns = owner
             && static_cast<GJBaseGameLayer*>(owner) == static_cast<GJBaseGameLayer*>(this);
         if (universalOwns) {
-            g_universalRuntime.setStepCallback([this](float innerDt) {
+            g_universalRuntime.setStepCallback([this, owner](float innerDt) {
+                // This is the only gameplay step permitted while SEARCHING. The outer
+                // scheduled callback never executes a visible/base gameplay frame.
+                owner->m_isPaused = false;
                 g_universalInternalStep = true;
                 GJBaseGameLayer::update(innerDt);
                 g_universalInternalStep = false;
@@ -243,8 +262,49 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
 
             if (g_universalRuntime.searching()) {
                 ++g_authoritativeFreeze.gjBaseUpdateCalls;
-                owner->m_isPaused = true;
+                // Keep the scheduler alive. Visible gameplay is frozen because this outer
+                // callback returns without calling GJBaseGameLayer::update(dt).
+                owner->m_isPaused = false;
                 g_universalRuntime.searchSlice(32);
+
+                const auto liveStats = g_universalRuntime.stats();
+                const auto liveness = g_universalSearchLiveness.observe(
+                    liveStats,
+                    captureSearchVisibleState(owner),
+                    elapsedMs(g_universalSearchLivenessStarted) / 1000.0
+                );
+                if (liveness.state == autobot::presolve::SearchLivenessState::Fail) {
+                    if (!g_universalSearchLivenessFailLogged) {
+                        g_universalSearchLivenessFailLogged = true;
+                        log::error(
+                            "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=FAIL reason={} expansions={} depth={} frontier={} "
+                            "unique={} stagnantFrames={} playerVisibleFrozen=YES attemptsDelta=0",
+                            liveness.reason, liveStats.totalExpansions, liveStats.currentDepth,
+                            liveStats.frontierSize, liveStats.uniqueStates, liveness.stagnantFrames
+                        );
+                    }
+                    g_universalRuntime.fail("SEARCH DRIVER STALLED: " + liveness.reason);
+                    if (g_universalHUD) {
+                        g_universalHUD->updatePreRun(
+                            autobot::presolve::PreRunStage::NotReady,
+                            g_universalRuntime.reason(),
+                            false,
+                            liveStats.bestProgress
+                        );
+                    }
+                    return;
+                }
+                if (liveness.state == autobot::presolve::SearchLivenessState::Pass
+                    && !g_universalSearchLivenessPassLogged) {
+                    g_universalSearchLivenessPassLogged = true;
+                    log::info(
+                        "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=PASS expansions={} depth={} frontier={} unique={} "
+                        "best={:.3f}% playerXDelta=0 levelTimeDelta=0 progressDelta=0 attemptsDelta=0",
+                        liveStats.totalExpansions, liveStats.currentDepth, liveStats.frontierSize,
+                        liveStats.uniqueStates, liveStats.bestProgress
+                    );
+                }
+
                 verifyAuthoritativeFreezeRuntime(owner);
                 if (g_universalHUD) {
                     const auto stats = g_universalRuntime.stats();
@@ -622,6 +682,13 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         g_universalHUD = &m_fields->autonomousHUD;
         m_fields->preRunFreezeActive = true;
         activateAuthoritativeFreeze(this);
+        g_universalSearchLiveness.reset(g_universalRuntime.stats(), captureSearchVisibleState(this));
+        g_universalSearchLivenessStarted = PerfClock::now();
+        g_universalSearchLivenessPassLogged = false;
+        g_universalSearchLivenessFailLogged = false;
+        // SEARCHING must not pause the scheduler; the outer GJBaseGameLayer hook is
+        // the freeze boundary and returns before visible gameplay can advance.
+        m_isPaused = false;
         log::info(
             "UNIVERSAL_RUNTIME_ORACLE=ACTIVE stepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
             "mechanicsDelegatedToGD=YES",
@@ -649,7 +716,9 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_isPaused = false;
         }
         if (m_fields->preRunFreezeActive) {
-            m_isPaused = true;
+            // SEARCHING needs the scheduler alive. This path must never advance visible
+            // gameplay; the authoritative outer update hook owns that freeze.
+            m_isPaused = g_universalRuntime.searching() ? false : true;
             verifyPreRunFreezeInvariant();
             verifyAuthoritativeFreezeRuntime(this);
             return;

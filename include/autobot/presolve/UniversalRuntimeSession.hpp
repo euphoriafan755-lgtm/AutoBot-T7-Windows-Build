@@ -31,6 +31,7 @@ public:
     void setStepCallback(StepCallback callback);
     void searchSlice(std::size_t expansionBudget);
     void playbackFrame(double realDt);
+    void fail(std::string reason);
 
     [[nodiscard]] PlayLayer* owner() const { return m_owner; }
     [[nodiscard]] UniversalRuntimeStage stage() const { return m_stage; }

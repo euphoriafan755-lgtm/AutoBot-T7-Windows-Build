@@ -30,7 +30,9 @@ bool UniversalRuntimeSession::begin(PlayLayer* layer) {
     }
     m_stage = UniversalRuntimeStage::Searching;
     m_reason = "ENGINE RUNTIME ORACLE SEARCH";
-    layer->m_isPaused = true;
+    // SEARCHING must keep the external scheduler alive. The hook freezes visible gameplay
+    // by returning before the base gameplay update; only oracle-internal steps may advance GD.
+    layer->m_isPaused = false;
     return true;
 }
 
@@ -95,8 +97,12 @@ bool UniversalRuntimeSession::beginRecoveryFromToken(UniversalToken token, std::
     if (!m_search.begin(*m_oracle)) return false;
     m_stage = UniversalRuntimeStage::Searching;
     m_reason = "DESYNC RECOVERY REPLAN #" + std::to_string(m_recoveryCount) + ": " + reason;
-    if (m_owner) m_owner->m_isPaused = true;
+    if (m_owner) m_owner->m_isPaused = false;
     return true;
+}
+
+void UniversalRuntimeSession::fail(std::string reason) {
+    enterError(std::move(reason));
 }
 
 bool UniversalRuntimeSession::canonicalMatchesExpected(std::size_t index, UniversalToken token) const {
@@ -114,7 +120,8 @@ void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
         enterError("VISIBLE ROOT RESTORE FAILED: " + m_oracle->lastError());
         return;
     }
-    if (m_owner) m_owner->m_isPaused = true;
+    // Keep the scheduler alive between slices; the outer hook owns the visible freeze.
+    if (m_owner) m_owner->m_isPaused = false;
 
     if (m_search.ready()) {
         m_policy = m_search.policy();

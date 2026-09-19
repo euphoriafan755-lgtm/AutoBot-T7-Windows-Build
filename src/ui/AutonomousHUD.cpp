@@ -1,4 +1,5 @@
 #include "autobot/ui/AutonomousHUD.hpp"
+#include "autobot/core/BuildInfo.hpp"
 
 #include <Geode/Geode.hpp>
 #include <fmt/format.h>
@@ -92,6 +93,7 @@ void AutonomousHUD::update(
         || !modelError.collisionMatched;
 
     std::string text = fmt::format(
+        "AutoBot T7 v{} | Build {} | {}\n"
         "PRE-RUN: {}\n"
         "PRE-RUN REASON: {}\n"
         "FULL POLICY REPLAY: {}\n"
@@ -110,6 +112,9 @@ void AutonomousHUD::update(
         "PLANNER READY: {}\n"
         "STATUS: {}\n"
         "MODEL ERROR: {:.2f}{}",
+        core::build::version(),
+        core::build::shortCommit(),
+        core::build::buildDate(),
         presolve::toString(decision.preRunStage),
         decision.preRunReason,
         decision.fullPolicyReplayPassed ? "PASS" : "NOT PASSED",
@@ -199,11 +204,15 @@ void AutonomousHUD::updatePreRun(
 ) {
     if (!m_label) return;
     const auto text = fmt::format(
+        "AutoBot T7 v{} | Build {} | {}\n"
         "PRE-RUN: {}\n"
         "REASON: {}\n"
         "FULL POLICY REPLAY: {}\n"
         "SIMULATED COMPLETION: {:.1f}%\n"
         "AUTOBOT: FROZEN UNTIL READY",
+        core::build::version(),
+        core::build::shortCommit(),
+        core::build::buildDate(),
         presolve::toString(stage),
         reason.empty() ? "WORKING" : reason,
         replayPassed ? "PASS" : "NOT PASSED",

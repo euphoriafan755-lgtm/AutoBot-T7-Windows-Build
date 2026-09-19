@@ -5,7 +5,7 @@
   },
   "id": "thiago7tv.autobot-t7",
   "name": "AutoBot T7",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "developer": "Thiago7TV",
   "description": "AutoBot T7 V0.1: general realtime solver with runtime CollisionWorld, per-mode physics, MPC replanning and trajectory visualization.",
   "settings": {

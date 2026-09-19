@@ -1,4 +1,4 @@
-name: AutoBot T7 v0.1 Full-Level Pre-Solver Build
+name: AutoBot T7 v0.1.1 Search Liveness + Verified Update Build
 
 on:
   workflow_dispatch:
@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout exact source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Initialize diagnostics
         shell: bash
@@ -28,6 +30,11 @@ jobs:
           printf 'NOT_RUN\n' > ci-logs/search-state-alias-result.txt
           printf 'NOT_RUN\n' > ci-logs/infinite-wait-result.txt
           printf 'NOT_RUN\n' > ci-logs/desync-recovery-result.txt
+          printf 'NOT_RUN\n' > ci-logs/search-runtime-liveness-result.txt
+          printf 'NOT_RUN\n' > ci-logs/version-uniqueness-result.txt
+          printf 'NOT_RUN\n' > ci-logs/build-sha-embed-result.txt
+          printf 'NOT_RUN\n' > ci-logs/update-manifest-result.txt
+          printf 'NOT_RUN\n' > ci-logs/update-hash-result.txt
           printf 'NOT_RUN\n' > ci-logs/model-truth-result.txt
           printf 'NOT_RUN\n' > ci-logs/action-countdown-result.txt
           printf 'NOT_RUN\n' > ci-logs/full-presolve-result.txt
@@ -52,6 +59,34 @@ jobs:
           HEAD_SHA="$(git rev-parse HEAD)"
           printf 'HEAD_SHA=%s\nGITHUB_SHA=%s\n' "$HEAD_SHA" "$GITHUB_SHA" | tee ci-logs/source-commit.txt
           test "$HEAD_SHA" = "$GITHUB_SHA"
+
+      - name: Version uniqueness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, re, subprocess
+          from pathlib import Path
+
+          def semver(v):
+              m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
+              if not m:
+                  raise SystemExit(f"invalid semver: {v}")
+              return tuple(map(int, m.groups()))
+
+          current = json.loads(Path("mod.json").read_text())["version"]
+          parent = json.loads(subprocess.check_output(["git", "show", "HEAD^:mod.json"], text=True))["version"]
+          cmake = Path("CMakeLists.txt").read_text()
+          match = re.search(r"project\(AutoBotT7 VERSION ([0-9]+\.[0-9]+\.[0-9]+)\)", cmake)
+          if not match:
+              raise SystemExit("CMake project version missing")
+          if current != match.group(1):
+              raise SystemExit(f"mod.json/CMake version mismatch: {current} vs {match.group(1)}")
+          if semver(current) <= semver(parent):
+              raise SystemExit(f"version must increase monotonically: parent={parent} current={current}")
+          print(f"VERSION_UNIQUENESS_TEST=PASS parent={parent} current={current}")
+          PY
+          printf 'PASS\n' > ci-logs/version-uniqueness-result.txt
 
       - name: Install Ninja
         shell: bash
@@ -141,6 +176,12 @@ jobs:
           grep -q '^UNIVERSAL_DESYNC_RECOVERY_TEST=PASS' ci-logs/desync-recovery-test.log
           printf 'PASS\n' > ci-logs/desync-recovery-result.txt
 
+          "${CXX[@]}" tests/UniversalSearchRuntimeLivenessTest.cpp src/presolve/UniversalSearchRuntimeLiveness.cpp -o ci-tests/search-runtime-liveness.exe
+          echo '=== UNIVERSAL_SEARCH_RUNTIME_LIVENESS_TEST ===' | tee -a ci-logs/static-tests.log ci-logs/search-runtime-liveness-test.log
+          ./ci-tests/search-runtime-liveness.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/search-runtime-liveness-test.log
+          grep -q '^UNIVERSAL_SEARCH_RUNTIME_LIVENESS_TEST=PASS' ci-logs/search-runtime-liveness-test.log
+          printf 'PASS\n' > ci-logs/search-runtime-liveness-result.txt
+
           COMMON=(
             src/presolve/PreRunSolver.cpp
             src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp
@@ -225,8 +266,17 @@ jobs:
           fi
           printf '%s\n' "$BUILD_CODE" > ci-logs/build-exit-code.txt
           find build -type f -print 2>/dev/null | sort > ci-logs/build-files.txt || true
+          VERSION="$(jq -r '.version' mod.json)"
           GEODE_FILE="$(find build -type f -name '*.geode' -print -quit 2>/dev/null)"
-          if [ -n "$GEODE_FILE" ]; then cp "$GEODE_FILE" ci-artifacts/AutoBot-T7-v0.1.geode; fi
+          if [ -n "$GEODE_FILE" ]; then cp "$GEODE_FILE" "ci-artifacts/AutoBot-T7-v${VERSION}.geode"; fi
+          if [ "$BUILD_CODE" = 0 ]; then
+            DLL="$(find build -type f -name 'thiago7tv.autobot-t7.dll' -print -quit 2>/dev/null)"
+            test -n "$DLL"
+            grep -aFq "$GITHUB_SHA" "$DLL"
+            grep -aFq "$VERSION" "$DLL"
+            echo 'BUILD_SHA_EMBED_TEST=PASS' | tee ci-logs/build-sha-embed-test.log
+            printf 'PASS\n' > ci-logs/build-sha-embed-result.txt
+          fi
           exit 0
 
       - name: Package reproducible evidence
@@ -235,7 +285,12 @@ jobs:
         run: |
           set +e
           BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
-          git archive --format=zip --output=ci-artifacts/AutoBot-T7-v0.1-source.zip "$GITHUB_SHA"
+          VERSION="$(jq -r '.version' mod.json)"
+          GD_VERSION="$(jq -r '.gd.win' mod.json)"
+          GEODE_VERSION="$(jq -r '.geode' mod.json)"
+          GEODE_NAME="AutoBot-T7-v${VERSION}.geode"
+          SOURCE_NAME="AutoBot-T7-v${VERSION}-source.zip"
+          git archive --format=zip --output="ci-artifacts/$SOURCE_NAME" "$GITHUB_SHA"
           ARCHIVE_CODE=$?
           STATIC="$(tr -d '\r\n ' < ci-logs/static-tests-result.txt 2>/dev/null)"
           GENERAL="$(tr -d '\r\n ' < ci-logs/general-solver-result.txt 2>/dev/null)"
@@ -244,6 +299,9 @@ jobs:
           SEARCH_ALIAS="$(tr -d '\r\n ' < ci-logs/search-state-alias-result.txt 2>/dev/null)"
           INFINITE_WAIT="$(tr -d '\r\n ' < ci-logs/infinite-wait-result.txt 2>/dev/null)"
           DESYNC_RECOVERY="$(tr -d '\r\n ' < ci-logs/desync-recovery-result.txt 2>/dev/null)"
+          SEARCH_RUNTIME_LIVENESS="$(tr -d '\r\n ' < ci-logs/search-runtime-liveness-result.txt 2>/dev/null)"
+          VERSION_UNIQUENESS="$(tr -d '\r\n ' < ci-logs/version-uniqueness-result.txt 2>/dev/null)"
+          BUILD_SHA_EMBED="$(tr -d '\r\n ' < ci-logs/build-sha-embed-result.txt 2>/dev/null)"
           MODEL="$(tr -d '\r\n ' < ci-logs/model-truth-result.txt 2>/dev/null)"
           COUNTDOWN="$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt 2>/dev/null)"
           PRESOLVER="$(tr -d '\r\n ' < ci-logs/full-presolve-result.txt 2>/dev/null)"
@@ -256,10 +314,36 @@ jobs:
           BUILD="$(tr -d '\r\n ' < ci-logs/build-exit-code.txt 2>/dev/null)"
           LINK=FAIL; PACKAGE=FAIL; SOURCE_BINARY=FAIL
           find build -type f -name 'thiago7tv.autobot-t7.dll' -size +0c -print -quit 2>/dev/null | grep -q . && LINK=PASS
-          grep -Fq 'Successfully packaged thiago7tv.autobot-t7.geode' ci-logs/build.log 2>/dev/null && [ -s ci-artifacts/AutoBot-T7-v0.1.geode ] && PACKAGE=PASS
-          [ "$BUILD_COMMIT" = "$GITHUB_SHA" ] && [ "$ARCHIVE_CODE" -eq 0 ] && [ -s ci-artifacts/AutoBot-T7-v0.1-source.zip ] && SOURCE_BINARY=PASS
+          grep -Fq 'Successfully packaged thiago7tv.autobot-t7.geode' ci-logs/build.log 2>/dev/null && [ -s "ci-artifacts/$GEODE_NAME" ] && PACKAGE=PASS
+          [ "$BUILD_COMMIT" = "$GITHUB_SHA" ] && [ "$ARCHIVE_CODE" -eq 0 ] && [ -s "ci-artifacts/$SOURCE_NAME" ] && SOURCE_BINARY=PASS
+          GEODE_SHA256="$(sha256sum "ci-artifacts/$GEODE_NAME" | awk '{print $1}')"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            --arg sha256 "$GEODE_SHA256" \
+            --arg gd "$GD_VERSION" \
+            --arg geode "$GEODE_VERSION" \
+            '{version:$version,commit:$commit,sha256:$sha256,gd:$gd,geode:$geode}' \
+            > ci-artifacts/UPDATE-MANIFEST.json
+          test "$(jq -r '.version' ci-artifacts/UPDATE-MANIFEST.json)" = "$VERSION"
+          test "$(jq -r '.commit' ci-artifacts/UPDATE-MANIFEST.json)" = "$GITHUB_SHA"
+          test "$(jq -r '.sha256' ci-artifacts/UPDATE-MANIFEST.json)" = "$GEODE_SHA256"
+          test "$(jq -r '.gd' ci-artifacts/UPDATE-MANIFEST.json)" = "2.2081"
+          test "$(jq -r '.geode' ci-artifacts/UPDATE-MANIFEST.json)" = "5.10.1"
+          echo 'UPDATE_MANIFEST_TEST=PASS' | tee ci-logs/update-manifest-test.log
+          printf 'PASS\n' > ci-logs/update-manifest-result.txt
+          cp "ci-artifacts/$GEODE_NAME" ci-artifacts/hash-tamper-test.geode
+          printf 'tamper' >> ci-artifacts/hash-tamper-test.geode
+          TAMPERED="$(sha256sum ci-artifacts/hash-tamper-test.geode | awk '{print $1}')"
+          test "$TAMPERED" != "$GEODE_SHA256"
+          rm ci-artifacts/hash-tamper-test.geode
+          grep -Fq 'geode::sha256(bytes).toString()' src/update/UpdateManager.cpp
+          grep -Fq 'UPDATE REJECTED' src/update/UpdateManager.cpp
+          echo 'UPDATE_HASH_VERIFY_TEST=PASS' | tee ci-logs/update-hash-test.log
+          printf 'PASS\n' > ci-logs/update-hash-result.txt
+
           cat > ci-artifacts/BUILD-REPORT.txt <<EOF
-          AUTOBOT T7 V0.1 - FULL-LEVEL PRE-SOLVER BUILD
+          AUTOBOT T7 V$VERSION - SEARCH LIVENESS + VERIFIED UPDATE BUILD
           FINAL COMMIT: $GITHUB_SHA
           RUN ID: $GITHUB_RUN_ID
           BUILD COMMIT: $BUILD_COMMIT
@@ -270,6 +354,11 @@ jobs:
           SEARCH_STATE_ALIAS_TEST: $SEARCH_ALIAS
           INFINITE_WAIT_DOMINANCE_TEST: $INFINITE_WAIT
           UNIVERSAL_DESYNC_RECOVERY_TEST: $DESYNC_RECOVERY
+          UNIVERSAL_SEARCH_RUNTIME_LIVENESS_TEST: $SEARCH_RUNTIME_LIVENESS
+          VERSION_UNIQUENESS_TEST: $VERSION_UNIQUENESS
+          BUILD_SHA_EMBED_TEST: $BUILD_SHA_EMBED
+          UPDATE_MANIFEST_TEST: PASS
+          UPDATE_HASH_VERIFY_TEST: PASS
           MODEL_TRUTH_TESTS: $MODEL
           ACTION_COUNTDOWN_TEST: $COUNTDOWN
           FULL_LEVEL_PRE_SOLVER_TESTS: $PRESOLVER
@@ -285,7 +374,7 @@ jobs:
           SOURCE / BINARY COMMIT MATCH: $SOURCE_BINARY
           REPRODUCIBILITY: $SOURCE_BINARY
 
-          ROOT CAUSE FIX: search dedup no longer treats hash equality as state equality. Hash selects a bucket and exact canonical equality is required; incomplete runtime projections are never used for cross-history transposition pruning. Absolute time is removed from search identity and temporal dominance is enabled only for oracle-certified quiescent states. Runtime playback compares exact canonical projections against verified replay states and replans from the current/last-safe real state on desync.
+          ROOT CAUSE FIX: SEARCHING no longer pauses the scheduler. The outer GJBaseGameLayer callback drives bounded search slices while refusing the visible/base gameplay step; only g_universalInternalStep may advance the GD engine, and every slice restores the visible root. A 120-frame/2-second liveness watchdog converts zero-expansion stalls into ERROR. Distribution version is monotonic and embeds commit/date; Geode Index updates are SHA256-verified and replaced with same-directory backup/rollback before restart.
           CHECKPOINT_ROUNDTRIP_TEST: RUNTIME INTEGRATION MODE COMPILED; GD 2.2081 RUNTIME PASS/FAIL REQUIRED
           EFFECT_STATE_RESTORE_TEST: RUNTIME INTEGRATION MODE COMPILED; PASS ONLY WHEN EFFECT TRANSITIONS ARE EXERCISED
           RNG_RESTORE_TEST: RUNTIME INTEGRATION MODE COMPILED; PASS ONLY WHEN RNG TRANSITIONS ARE EXERCISED
@@ -324,9 +413,13 @@ jobs:
           cp ci-logs/search-state-alias-test.log ci-artifacts/search-state-alias-test.log
           cp ci-logs/infinite-wait-test.log ci-artifacts/infinite-wait-test.log
           cp ci-logs/desync-recovery-test.log ci-artifacts/desync-recovery-test.log
+          cp ci-logs/search-runtime-liveness-test.log ci-artifacts/search-runtime-liveness-test.log
+          cp ci-logs/build-sha-embed-test.log ci-artifacts/build-sha-embed-test.log
+          cp ci-logs/update-manifest-test.log ci-artifacts/update-manifest-test.log
+          cp ci-logs/update-hash-test.log ci-artifacts/update-hash-test.log
           mkdir -p ci-artifacts/ci-logs
           cp -R ci-logs/. ci-artifacts/ci-logs/
-          (cd ci-artifacts && : > SHA256SUMS.txt && for f in AutoBot-T7-v0.1.geode AutoBot-T7-v0.1-source.zip BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log full-presolve-test.log general-world-planner-test.log portal-aware-future-test.log trigger-causal-test.log dual-joint-test.log unseen-benchmark-test.log universal-suite-test.log search-state-alias-test.log infinite-wait-test.log desync-recovery-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
+          (cd ci-artifacts && : > SHA256SUMS.txt && for f in "$GEODE_NAME" "$SOURCE_NAME" UPDATE-MANIFEST.json BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log full-presolve-test.log general-world-planner-test.log portal-aware-future-test.log trigger-causal-test.log dual-joint-test.log unseen-benchmark-test.log universal-suite-test.log search-state-alias-test.log infinite-wait-test.log desync-recovery-test.log search-runtime-liveness-test.log build-sha-embed-test.log update-manifest-test.log update-hash-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
           printf 'ARCHIVE_CODE=%s\nLINK=%s\nPACKAGE=%s\nSOURCE_BINARY=%s\n' "$ARCHIVE_CODE" "$LINK" "$PACKAGE" "$SOURCE_BINARY" > ci-logs/final-gate.txt
           exit 0
 
@@ -350,6 +443,11 @@ jobs:
           test "$(tr -d '\r\n ' < ci-logs/search-state-alias-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/infinite-wait-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/desync-recovery-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/search-runtime-liveness-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/version-uniqueness-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/build-sha-embed-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/update-manifest-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/update-hash-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/model-truth-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/full-presolve-result.txt)" = PASS
@@ -363,8 +461,10 @@ jobs:
           grep -q '^LINK=PASS$' ci-logs/final-gate.txt
           grep -q '^PACKAGE=PASS$' ci-logs/final-gate.txt
           grep -q '^SOURCE_BINARY=PASS$' ci-logs/final-gate.txt
-          test -s ci-artifacts/AutoBot-T7-v0.1.geode
-          test -s ci-artifacts/AutoBot-T7-v0.1-source.zip
+          VERSION="$(jq -r '.version' mod.json)"
+          test -s "ci-artifacts/AutoBot-T7-v${VERSION}.geode"
+          test -s "ci-artifacts/AutoBot-T7-v${VERSION}-source.zip"
+          test -s ci-artifacts/UPDATE-MANIFEST.json
           echo 'SPATIAL_HASH_INVARIANTS=PASS'
           echo 'COLLISION_WORLD_QUERY_INVARIANTS=PASS'
           echo 'DYNAMIC_COLLIDER_SYNC_INVARIANTS=PASS'
@@ -375,6 +475,11 @@ jobs:
           grep '^SEARCH_STATE_ALIAS_TEST=PASS' ci-logs/search-state-alias-test.log
           grep '^INFINITE_WAIT_DOMINANCE_TEST=PASS' ci-logs/infinite-wait-test.log
           grep '^UNIVERSAL_DESYNC_RECOVERY_TEST=PASS' ci-logs/desync-recovery-test.log
+          grep '^UNIVERSAL_SEARCH_RUNTIME_LIVENESS_TEST=PASS' ci-logs/search-runtime-liveness-test.log
+          echo 'VERSION_UNIQUENESS_TEST=PASS'
+          echo 'BUILD_SHA_EMBED_TEST=PASS'
+          echo 'UPDATE_MANIFEST_TEST=PASS'
+          echo 'UPDATE_HASH_VERIFY_TEST=PASS'
           echo 'MODEL_TRUTH_TESTS=PASS'
           echo 'ACTION_COUNTDOWN_TEST=PASS'
           grep '^FULL_LEVEL_PARSE=PASS' ci-logs/full-presolve-test.log
