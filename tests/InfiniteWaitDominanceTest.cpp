@@ -29,6 +29,9 @@ public:
         return obs(m_state);
     }
     void discard(UniversalToken t) override { m_snapshots.erase(t); }
+    std::uint64_t decisionEpoch() const override {
+        return static_cast<std::uint64_t>(m_state.timer);
+    }
     std::optional<UniversalCanonicalState> canonicalState(UniversalToken t) const override {
         auto it=m_snapshots.find(t); if(it==m_snapshots.end()) return std::nullopt;
         auto const& s=it->second;
