@@ -32,6 +32,7 @@ std::vector<UniversalAction> UniversalSearchCore::actionsFor(bool dual, bool pla
         {true,  true,  false},
         {true,  false, true },
     }};
+
     std::vector<UniversalAction> result;
     result.reserve(dual ? single.size() * single.size() : single.size());
     for (auto const p1 : single) {
@@ -42,6 +43,55 @@ std::vector<UniversalAction> UniversalSearchCore::actionsFor(bool dual, bool pla
         for (auto const p2 : single) {
             result.push_back({p1.jump, p1.left, p1.right, p2.jump, p2.left, p2.right});
         }
+    }
+    return result;
+}
+
+std::vector<std::size_t> UniversalSearchCore::durationsFor(
+    std::size_t strategyTier,
+    bool dual,
+    bool platformer
+) {
+    strategyTier = std::min<std::size_t>(strategyTier, 3);
+
+    if (platformer && dual) {
+        switch (strategyTier) {
+            case 0: return {8, 2, 1};
+            case 1: return {6, 2, 1};
+            case 2: return {4, 2, 1};
+            default: return {2, 1};
+        }
+    }
+
+    if (platformer) {
+        switch (strategyTier) {
+            case 0: return {24, 8, 2, 1};
+            case 1: return {16, 6, 2, 1};
+            case 2: return {8, 4, 2, 1};
+            default: return {4, 2, 1};
+        }
+    }
+
+    switch (strategyTier) {
+        case 0: return {64, 24, 8, 2, 1};
+        case 1: return {32, 12, 4, 1};
+        case 2: return {16, 6, 2, 1};
+        default: return {8, 4, 2, 1};
+    }
+}
+
+UniversalSearchCore::AdvanceResult UniversalSearchCore::advanceAction(
+    IUniversalStateOracle& oracle,
+    UniversalAction action,
+    std::size_t ticks
+) {
+    AdvanceResult result{};
+    result.observation = oracle.observe();
+
+    for (std::size_t i = 0; i < std::max<std::size_t>(1, ticks); ++i) {
+        result.observation = oracle.step(action);
+        ++result.ticks;
+        if (!result.observation.valid || result.observation.dead || result.observation.complete) break;
     }
     return result;
 }
@@ -65,6 +115,7 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
         m_frontier.clear();
         m_nextFrontier.clear();
     }
+
     m_stage = UniversalSearchStage::Idle;
     m_rootToken = kInvalidUniversalToken;
     m_rootObservation = {};
@@ -76,15 +127,28 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
     m_replayStates.clear();
     m_replayCursor = 0;
     m_totalExpansions = 0;
+    m_totalEngineSteps = 0;
     m_currentDepth = 0;
     m_uniqueStates = 0;
     m_exactDedupHits = 0;
     m_temporalDominanceHits = 0;
+    m_currentMacroTicks = 1;
+    m_strategyTier = 0;
+    m_stallRecoveries = 0;
     m_bestProgress = 0.0;
+    m_rootProgress = 0.0;
+    m_startedAt = {};
+}
+
+bool UniversalSearchCore::refineStrategy() {
+    if (m_strategyTier >= 3) return false;
+    ++m_strategyTier;
+    ++m_stallRecoveries;
+    prioritizeFrontier();
+    return true;
 }
 
 bool UniversalSearchCore::shouldPrune(UniversalCanonicalState const& canonical, std::size_t depth) {
-    // Temporal dominance is an independent proof supplied by the oracle.
     if (canonical.temporalDominanceEligible) {
         auto it = m_temporalBuckets.find(canonical.temporalHash);
         if (it != m_temporalBuckets.end()) {
@@ -97,9 +161,6 @@ bool UniversalSearchCore::shouldPrune(UniversalCanonicalState const& canonical, 
         }
     }
 
-    // Never use an incomplete semantic projection to merge two histories.
-    // This is deliberately conservative: missing a performance optimization is
-    // acceptable; pruning a valid solution is not.
     if (!canonical.completeRepresentation) return false;
 
     auto it = m_seenBuckets.find(canonical.hash);
@@ -144,16 +205,20 @@ void UniversalSearchCore::remember(UniversalCanonicalState const& canonical, std
 
 bool UniversalSearchCore::begin(IUniversalStateOracle& oracle) {
     reset(&oracle);
+    m_startedAt = std::chrono::steady_clock::now();
+
     const auto root = oracle.observe();
     if (!root.valid || root.dead) {
         m_stage = UniversalSearchStage::Error;
         return false;
     }
+
     auto token = oracle.capture();
     if (!token || *token == kInvalidUniversalToken) {
         m_stage = UniversalSearchStage::Error;
         return false;
     }
+
     auto canonical = oracle.canonicalState(*token);
     if (!canonical) {
         oracle.discard(*token);
@@ -168,6 +233,7 @@ bool UniversalSearchCore::begin(IUniversalStateOracle& oracle) {
     remember(*canonical, 0);
     m_frontier.push_back({m_rootToken, 0, root, *canonical});
     m_bestProgress = root.progress;
+    m_rootProgress = root.progress;
     m_stage = root.complete ? UniversalSearchStage::Ready : UniversalSearchStage::Searching;
     return true;
 }
@@ -176,24 +242,47 @@ void UniversalSearchCore::reconstructPolicy(std::size_t metaIndex) {
     m_policy.clear();
     while (metaIndex != 0 && metaIndex < m_meta.size()) {
         auto const& node = m_meta[metaIndex];
-        m_policy.push_back(node.action);
+        for (std::size_t i = 0; i < node.repeatTicks; ++i) {
+            m_policy.push_back(node.action);
+        }
         metaIndex = node.parent;
     }
     std::reverse(m_policy.begin(), m_policy.end());
 }
 
+void UniversalSearchCore::prioritizeFrontier() {
+    auto better = [this](FrontierEntry const& a, FrontierEntry const& b) {
+        if (std::abs(a.observation.progress - b.observation.progress) > 1e-9) {
+            return a.observation.progress > b.observation.progress;
+        }
+        const auto da = a.metaIndex < m_meta.size() ? m_meta[a.metaIndex].depth : 0;
+        const auto db = b.metaIndex < m_meta.size() ? m_meta[b.metaIndex].depth : 0;
+        return da < db;
+    };
+
+    if (m_frontier.size() > 1) {
+        std::stable_sort(m_frontier.begin(), m_frontier.end(), better);
+    }
+    if (m_nextFrontier.size() > 1) {
+        std::stable_sort(m_nextFrontier.begin(), m_nextFrontier.end(), better);
+    }
+}
+
 bool UniversalSearchCore::beginReplay(IUniversalStateOracle& oracle, std::size_t terminalMetaIndex) {
     reconstructPolicy(terminalMetaIndex);
     clearFrontierTokens(oracle);
+
     if (!oracle.restore(m_rootToken)) {
         m_stage = UniversalSearchStage::Error;
         return false;
     }
+
     const auto restored = oracle.observe();
     if (!restored.valid || restored.dead) {
         m_stage = UniversalSearchStage::Error;
         return false;
     }
+
     m_replayStates.clear();
     m_replayCursor = 0;
     m_stage = UniversalSearchStage::Replaying;
@@ -205,22 +294,27 @@ UniversalSearchStats UniversalSearchCore::replayWork(IUniversalStateOracle& orac
     while (done < budget && m_replayCursor < m_policy.size()) {
         const auto observation = oracle.step(m_policy[m_replayCursor]);
         ++m_replayCursor;
+        ++m_totalEngineSteps;
         ++done;
+
         if (!observation.valid || observation.dead) {
             m_stage = UniversalSearchStage::Error;
             break;
         }
+
         auto replayToken = oracle.capture();
         if (!replayToken) {
             m_stage = UniversalSearchStage::Error;
             break;
         }
+
         auto canonical = oracle.canonicalState(*replayToken);
         oracle.discard(*replayToken);
         if (!canonical) {
             m_stage = UniversalSearchStage::Error;
             break;
         }
+
         m_replayStates.push_back(std::move(*canonical));
         m_bestProgress = std::max(m_bestProgress, observation.progress);
         if (observation.complete) {
@@ -235,6 +329,7 @@ UniversalSearchStats UniversalSearchCore::replayWork(IUniversalStateOracle& orac
             ? UniversalSearchStage::Ready
             : UniversalSearchStage::Error;
     }
+
     if (m_stage == UniversalSearchStage::Ready) {
         if (!oracle.restore(m_rootToken)) m_stage = UniversalSearchStage::Error;
     }
@@ -252,71 +347,102 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
                 m_stage = UniversalSearchStage::Exhausted;
                 break;
             }
-            std::stable_sort(
-                m_nextFrontier.begin(),
-                m_nextFrontier.end(),
-                [](FrontierEntry const& a, FrontierEntry const& b) {
-                    return a.observation.progress > b.observation.progress;
-                }
-            );
+            prioritizeFrontier();
             m_frontier.swap(m_nextFrontier);
-            ++m_currentDepth;
         }
 
-        auto entry = m_frontier.front();
+        auto entry = std::move(m_frontier.front());
         m_frontier.pop_front();
+        if (entry.metaIndex >= m_meta.size()) {
+            if (entry.token != m_rootToken) oracle.discard(entry.token);
+            m_stage = UniversalSearchStage::Error;
+            break;
+        }
+
         if (!oracle.restore(entry.token)) {
             if (entry.token != m_rootToken) oracle.discard(entry.token);
             m_stage = UniversalSearchStage::Error;
             break;
         }
 
-        const auto actions = actionsFor(entry.observation.dual, entry.observation.platformer);
+        auto const parentDepth = m_meta[entry.metaIndex].depth;
+        m_currentDepth = std::max(m_currentDepth, parentDepth);
+
+        auto actions = actionsFor(entry.observation.dual, entry.observation.platformer);
+        if (parentDepth > 0) {
+            auto const previous = m_meta[entry.metaIndex].action;
+            std::stable_sort(actions.begin(), actions.end(), [&](UniversalAction const& a, UniversalAction const& b) {
+                return (a == previous) && !(b == previous);
+            });
+        }
+        const auto durations = durationsFor(m_strategyTier, entry.observation.dual, entry.observation.platformer);
+
+        // A time slice always finishes the current decision state. This avoids
+        // silently dropping untried actions when a macro branch reaches the
+        // nominal slice budget.
         for (auto const action : actions) {
-            if (!oracle.restore(entry.token)) {
-                m_stage = UniversalSearchStage::Error;
-                break;
-            }
-            const auto observation = oracle.step(action);
-            ++m_totalExpansions;
-            ++expandedThisCall;
-            if (!observation.valid || observation.dead) continue;
+            for (auto const duration : durations) {
+                if (!oracle.restore(entry.token)) {
+                    m_stage = UniversalSearchStage::Error;
+                    break;
+                }
 
-            m_bestProgress = std::max(m_bestProgress, observation.progress);
-            const auto childDepth = m_meta[entry.metaIndex].depth + 1;
+                m_currentMacroTicks = duration;
+                const auto advanced = advanceAction(oracle, action, duration);
+                ++m_totalExpansions;
+                ++expandedThisCall;
+                m_totalEngineSteps += advanced.ticks;
 
-            // Capture before dedup so equality is evaluated against the exact
-            // captured state, not against a lossy observation hash.
-            auto token = oracle.capture();
-            if (!token || *token == kInvalidUniversalToken) {
-                m_stage = UniversalSearchStage::Error;
-                break;
-            }
-            auto canonical = oracle.canonicalState(*token);
-            if (!canonical) {
-                oracle.discard(*token);
-                m_stage = UniversalSearchStage::Error;
-                break;
-            }
-            if (shouldPrune(*canonical, childDepth)) {
-                oracle.discard(*token);
-                continue;
-            }
-            remember(*canonical, childDepth);
+                const auto observation = advanced.observation;
+                if (!observation.valid || observation.dead || advanced.ticks == 0) continue;
 
-            const auto childMeta = m_meta.size();
-            m_meta.push_back({entry.metaIndex, action, childDepth});
-            if (observation.complete) {
-                oracle.discard(*token);
-                if (entry.token != m_rootToken) oracle.discard(entry.token);
-                if (!beginReplay(oracle, childMeta)) break;
-                return replayWork(oracle, std::numeric_limits<std::size_t>::max());
-            }
+                m_bestProgress = std::max(m_bestProgress, observation.progress);
+                const auto childDepth = parentDepth + advanced.ticks;
+                m_currentDepth = std::max(m_currentDepth, childDepth);
 
-            m_nextFrontier.push_back({*token, childMeta, observation, std::move(*canonical)});
+                auto token = oracle.capture();
+                if (!token || *token == kInvalidUniversalToken) {
+                    m_stage = UniversalSearchStage::Error;
+                    break;
+                }
+
+                auto canonical = oracle.canonicalState(*token);
+                if (!canonical) {
+                    oracle.discard(*token);
+                    m_stage = UniversalSearchStage::Error;
+                    break;
+                }
+
+                if (shouldPrune(*canonical, childDepth)) {
+                    oracle.discard(*token);
+                    continue;
+                }
+                remember(*canonical, childDepth);
+
+                const auto childMeta = m_meta.size();
+                m_meta.push_back({entry.metaIndex, action, childDepth, advanced.ticks});
+
+                if (observation.complete) {
+                    oracle.discard(*token);
+                    if (entry.token != m_rootToken) oracle.discard(entry.token);
+                    if (!beginReplay(oracle, childMeta)) break;
+                    return replayWork(oracle, std::numeric_limits<std::size_t>::max());
+                }
+
+                FrontierEntry child{*token, childMeta, observation, std::move(*canonical)};
+                if (observation.progress > entry.observation.progress + 1e-9) {
+                    m_frontier.push_back(std::move(child));
+                } else {
+                    m_nextFrontier.push_back(std::move(child));
+                }
+            }
+            if (m_stage != UniversalSearchStage::Searching) break;
         }
 
         if (entry.token != m_rootToken) oracle.discard(entry.token);
+        if (m_stage != UniversalSearchStage::Searching) break;
+
+        if (m_totalExpansions % 32U == 0U) prioritizeFrontier();
     }
 
     if (m_stage == UniversalSearchStage::Replaying && expandedThisCall < expansionBudget) {
@@ -329,13 +455,54 @@ UniversalSearchStats UniversalSearchCore::stats() const {
     UniversalSearchStats result{};
     result.stage = m_stage;
     result.totalExpansions = m_totalExpansions;
+    result.totalEngineSteps = m_totalEngineSteps;
     result.frontierSize = m_frontier.size() + m_nextFrontier.size();
     result.currentDepth = m_currentDepth;
     result.uniqueStates = m_uniqueStates;
     result.replayCursor = m_replayCursor;
     result.exactDedupHits = m_exactDedupHits;
     result.temporalDominanceHits = m_temporalDominanceHits;
+    result.currentMacroTicks = m_currentMacroTicks;
+    result.strategyTier = m_strategyTier;
+    result.stallRecoveries = m_stallRecoveries;
     result.bestProgress = m_bestProgress;
+
+    if (m_startedAt != std::chrono::steady_clock::time_point{}) {
+        result.elapsedSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - m_startedAt
+        ).count();
+    }
+    if (result.elapsedSeconds > 1e-9) {
+        result.expansionsPerSecond = static_cast<double>(m_totalExpansions) / result.elapsedSeconds;
+    }
+
+    if (result.elapsedSeconds > 0.25 && m_bestProgress > m_rootProgress + 0.05 && m_bestProgress < 100.0) {
+        const auto progressRate = (m_bestProgress - m_rootProgress) / result.elapsedSeconds;
+        if (progressRate > 1e-9) {
+            result.etaSeconds = std::max(0.0, (100.0 - m_bestProgress) / progressRate);
+        }
+    }
+
+    std::size_t words = m_rootCanonical.words.size() + m_rootCanonical.temporalWords.size();
+    for (auto const& entry : m_frontier) {
+        words += entry.canonical.words.size() + entry.canonical.temporalWords.size();
+    }
+    for (auto const& entry : m_nextFrontier) {
+        words += entry.canonical.words.size() + entry.canonical.temporalWords.size();
+    }
+    for (auto const& [_, bucket] : m_seenBuckets) {
+        for (auto const& seen : bucket) words += seen.words.size();
+    }
+    for (auto const& [_, bucket] : m_temporalBuckets) {
+        for (auto const& seen : bucket) words += seen.words.size();
+    }
+
+    result.estimatedMemoryBytes =
+        words * sizeof(std::uint64_t)
+        + m_meta.size() * sizeof(NodeMeta)
+        + (m_frontier.size() + m_nextFrontier.size()) * sizeof(FrontierEntry)
+        + m_policy.size() * sizeof(UniversalAction);
+
     return result;
 }
 
