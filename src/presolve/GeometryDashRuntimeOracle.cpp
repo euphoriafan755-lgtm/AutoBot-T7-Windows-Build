@@ -320,6 +320,76 @@ struct GeometryDashRuntimeOracle::Impl {
         return s;
     }
 
+    std::uint64_t controlDecisionEpoch() const {
+        if (!layer) return 0;
+
+        std::vector<std::uint64_t> words;
+        words.reserve(32U + trackedObjects.size() * 3U);
+
+        words.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_isDualMode));
+        words.push_back(static_cast<std::uint64_t>(layer->m_isPlatformer));
+        words.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_currentChannel));
+        words.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_rotateChannel));
+        words.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_levelFlipping));
+        words.push_back(bits(layer->m_gameState.m_timeWarp));
+        words.push_back(bits(layer->m_gameState.m_portalY));
+
+        auto appendControlPlayer = [&](PlayerObject* player) {
+            if (!player) {
+                words.push_back(0x4e4f504c41594552ULL);
+                return;
+            }
+
+            std::uint64_t flags = 0;
+            flags |= static_cast<std::uint64_t>(player->m_isDead) << 0U;
+            flags |= static_cast<std::uint64_t>(player->m_isOnGround) << 1U;
+            flags |= static_cast<std::uint64_t>(player->m_isUpsideDown) << 2U;
+            flags |= static_cast<std::uint64_t>(player->m_isShip) << 3U;
+            flags |= static_cast<std::uint64_t>(player->m_isBall) << 4U;
+            flags |= static_cast<std::uint64_t>(player->m_isBird) << 5U;
+            flags |= static_cast<std::uint64_t>(player->m_isDart) << 6U;
+            flags |= static_cast<std::uint64_t>(player->m_isRobot) << 7U;
+            flags |= static_cast<std::uint64_t>(player->m_isSpider) << 8U;
+            flags |= static_cast<std::uint64_t>(player->m_isSwing) << 9U;
+            flags |= static_cast<std::uint64_t>(player->m_jumpBuffered) << 10U;
+            flags |= static_cast<std::uint64_t>(player->m_isDashing) << 11U;
+            flags |= static_cast<std::uint64_t>(player->m_isGoingLeft) << 12U;
+            flags |= static_cast<std::uint64_t>(player->m_isPlatformer) << 13U;
+            words.push_back(flags);
+            words.push_back(bits(player->m_gravityMod));
+            words.push_back(bits(player->m_vehicleSize));
+            words.push_back(bits(player->m_playerSpeed));
+            words.push_back(static_cast<std::uint64_t>(player->m_touchedRings.size()));
+            words.push_back(static_cast<std::uint64_t>(player->m_jumpPadRelated.size()));
+        };
+
+        appendControlPlayer(layer->m_player1);
+        appendControlPlayer(layer->m_player2);
+
+        // Only discrete trigger/group state participates here. Object position,
+        // rotation and scale are deliberately excluded: moving geometry may
+        // change every engine tick and would destroy macro stepping.
+        for (auto* object : trackedObjects) {
+            if (!object) continue;
+            const auto state = captureObject(object);
+            std::uint64_t flags = 0;
+            flags |= static_cast<std::uint64_t>(state.groupDisabled) << 0U;
+            flags |= static_cast<std::uint64_t>(state.disabled) << 1U;
+            flags |= static_cast<std::uint64_t>(state.disabled2) << 2U;
+            flags |= static_cast<std::uint64_t>(state.activatedP1) << 3U;
+            flags |= static_cast<std::uint64_t>(state.activatedP2) << 4U;
+
+            words.push_back(static_cast<std::uint64_t>(object->m_uniqueID));
+            words.push_back(flags);
+            words.push_back(static_cast<std::uint64_t>(
+                static_cast<std::uint32_t>(state.enabledGroupsCounter)
+            ));
+        }
+
+        const auto hash = hashWords(words);
+        return hash.lo ^ (hash.hi + 0x9e3779b97f4a7c15ULL + (hash.lo << 6U) + (hash.lo >> 2U));
+    }
+
     UniversalCanonicalState makeCanonical(CanonicalSections const& s) const {
         UniversalCanonicalState c{};
         c.words.reserve(s.core.size() + s.rng.size() + s.effect.size() + s.dynamic.size() + 4U);
@@ -501,6 +571,10 @@ std::optional<UniversalCanonicalState> GeometryDashRuntimeOracle::canonicalState
     auto it = m_impl->snapshots.find(token);
     if (it == m_impl->snapshots.end() || !it->second) return std::nullopt;
     return it->second->canonical;
+}
+
+std::uint64_t GeometryDashRuntimeOracle::decisionEpoch() const {
+    return m_impl ? m_impl->controlDecisionEpoch() : 0;
 }
 
 } // namespace autobot::presolve
