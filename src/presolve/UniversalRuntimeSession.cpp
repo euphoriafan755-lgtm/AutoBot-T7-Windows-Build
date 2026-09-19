@@ -9,15 +9,123 @@
 using namespace geode::prelude;
 
 namespace autobot::presolve {
+namespace {
+
+char const* runtimeStageName(UniversalRuntimeStage stage) {
+    switch (stage) {
+        case UniversalRuntimeStage::Idle: return "Idle";
+        case UniversalRuntimeStage::Searching: return "Searching";
+        case UniversalRuntimeStage::Ready: return "Ready";
+        case UniversalRuntimeStage::Playing: return "Playing";
+        case UniversalRuntimeStage::Complete: return "Complete";
+        case UniversalRuntimeStage::Error: return "Error";
+    }
+    return "Unknown";
+}
+
+char const* searchStageName(UniversalSearchStage stage) {
+    switch (stage) {
+        case UniversalSearchStage::Idle: return "Idle";
+        case UniversalSearchStage::Searching: return "Searching";
+        case UniversalSearchStage::Replaying: return "Replaying";
+        case UniversalSearchStage::Ready: return "Ready";
+        case UniversalSearchStage::Exhausted: return "Exhausted";
+        case UniversalSearchStage::Error: return "Error";
+    }
+    return "Unknown";
+}
+
+} // namespace
+
+void UniversalRuntimeSession::recordLifecycle(std::string message) {
+    constexpr std::size_t kMaxLifecycleEvents = 24;
+    if (m_lifecycleTrace.size() >= kMaxLifecycleEvents) m_lifecycleTrace.pop_front();
+    m_lifecycleTrace.push_back(std::move(message));
+}
+
+void UniversalRuntimeSession::dumpLifecycle(std::string_view context) const {
+    log::error(
+        "UNIVERSAL_LIFECYCLE_DUMP generation={} context={} entries={}",
+        m_generation,
+        context,
+        m_lifecycleTrace.size()
+    );
+    for (std::size_t i = 0; i < m_lifecycleTrace.size(); ++i) {
+        log::error("UNIVERSAL_LIFECYCLE_DUMP[{}] {}", i, m_lifecycleTrace[i]);
+    }
+}
+
+bool UniversalRuntimeSession::validateSearchCoreInvariant(std::string_view context) {
+    if (m_stage != UniversalRuntimeStage::Searching) return true;
+
+    const auto core = m_search.stats();
+    const bool stageOk = core.stage == UniversalSearchStage::Searching
+        || core.stage == UniversalSearchStage::Replaying;
+    const bool frontierOk = core.stage != UniversalSearchStage::Searching || core.frontierSize > 0;
+    const bool startedOk = core.started;
+
+    if (stageOk && frontierOk && startedOk) return true;
+
+    const auto reason = fmt::format(
+        "A) SEARCH CORE LOST AFTER BEGIN generation={} context={} runtimeStage={} coreStage={} "
+        "started={} frontier={} elapsed={:.6f}s expansions={} engineSteps={} resetSerial={}",
+        m_generation,
+        context,
+        runtimeStageName(m_stage),
+        searchStageName(core.stage),
+        core.started ? "YES" : "NO",
+        core.frontierSize,
+        core.elapsedSeconds,
+        core.totalExpansions,
+        core.totalEngineSteps,
+        core.resetSerial
+    );
+    log::error("{}", reason);
+    recordLifecycle(reason);
+    dumpLifecycle(context);
+    enterError(reason);
+    return false;
+}
 
 bool UniversalRuntimeSession::begin(PlayLayer* layer) {
-    reset();
     if (!layer) {
         enterError("A) SEARCH DRIVER NO CORRE: PLAYLAYER NULL");
         return false;
     }
 
+    const auto previousRuntimeStage = m_stage;
+    ++m_generation;
+    m_lifecycleTrace.clear();
+    m_searchSliceCount = 0;
     m_owner = layer;
+
+    m_search.setLifecycleGeneration(m_generation);
+    m_search.setLifecycleCallback([this](
+        std::uint64_t generation,
+        UniversalSearchStage previousStage,
+        UniversalSearchStage newStage,
+        std::string_view reason,
+        std::size_t resetSerial
+    ) {
+        const auto event = fmt::format(
+            "SEARCH_CORE_RESET generation={} reason={} previousStage={} newStage={} resetSerial={}",
+            generation,
+            reason,
+            searchStageName(previousStage),
+            searchStageName(newStage),
+            resetSerial
+        );
+        log::warn("{}", event);
+        recordLifecycle(event);
+    });
+
+    const auto runtimeBegin = fmt::format(
+        "RUNTIME_BEGIN generation={} previousStage={} newStage=Initializing",
+        m_generation,
+        runtimeStageName(previousRuntimeStage)
+    );
+    log::info("{}", runtimeBegin);
+    recordLifecycle(runtimeBegin);
 
     // Start coarse enough for real use, then tighten only when search evidence
     // says the current resolution cannot close the route.
@@ -35,22 +143,59 @@ bool UniversalRuntimeSession::begin(PlayLayer* layer) {
         return false;
     }
 
+    const auto bootstrap = m_search.stats();
+    const auto searchBeginEvent = fmt::format(
+        "SEARCH_BEGIN generation={} frontier={} coreStage={} started={} elapsed={:.6f}s resetSerial={}",
+        m_generation,
+        bootstrap.frontierSize,
+        searchStageName(bootstrap.stage),
+        bootstrap.started ? "YES" : "NO",
+        bootstrap.elapsedSeconds,
+        bootstrap.resetSerial
+    );
+    log::info("{}", searchBeginEvent);
+    recordLifecycle(searchBeginEvent);
+
     m_stage = UniversalRuntimeStage::Searching;
+    if (!validateSearchCoreInvariant("immediately-after-begin")) return false;
     m_reason = "ENGINE RUNTIME ORACLE SEARCH";
     layer->m_isPaused = false;
     return true;
 }
 
-void UniversalRuntimeSession::reset() {
+void UniversalRuntimeSession::reset(std::string_view reason) {
+    const auto previousRuntimeStage = m_stage;
+    const auto coreBefore = m_search.stats();
+
+    log::warn(
+        "RUNTIME_RESET generation={} reason={} previousStage={} newStage=Idle "
+        "coreStage={} frontier={} expansions={} engineSteps={} resetSerial={}",
+        m_generation,
+        reason,
+        runtimeStageName(previousRuntimeStage),
+        searchStageName(coreBefore.stage),
+        coreBefore.frontierSize,
+        coreBefore.totalExpansions,
+        coreBefore.totalEngineSteps,
+        coreBefore.resetSerial
+    );
+    recordLifecycle(fmt::format(
+        "RUNTIME_RESET generation={} reason={} previousStage={} newStage=Idle coreStage={} resetSerial={}",
+        m_generation,
+        reason,
+        runtimeStageName(previousRuntimeStage),
+        searchStageName(coreBefore.stage),
+        coreBefore.resetSerial
+    ));
+
+    m_search.reset(m_oracle.get(), reason);
     if (m_oracle) {
-        m_search.reset(m_oracle.get());
         if (m_lastSafePlayback != kInvalidUniversalToken) m_oracle->discard(m_lastSafePlayback);
         if (m_visibleRoot != kInvalidUniversalToken) m_oracle->discard(m_visibleRoot);
     }
 
     m_owner = nullptr;
     m_oracle.reset();
-    m_search = {};
     m_visibleRoot = kInvalidUniversalToken;
     m_lastSafePlayback = kInvalidUniversalToken;
     m_policy.clear();
@@ -59,6 +204,7 @@ void UniversalRuntimeSession::reset() {
     m_refinement = 0;
     m_recoveryCount = 0;
     m_stallRecoveryCount = 0;
+    m_searchSliceCount = 0;
     m_accumulator = 0.0;
     m_stage = UniversalRuntimeStage::Idle;
     m_reason = "IDLE";
@@ -69,8 +215,15 @@ void UniversalRuntimeSession::setStepCallback(StepCallback callback) {
 }
 
 void UniversalRuntimeSession::enterError(std::string reason) {
+    const auto previousStage = m_stage;
     m_stage = UniversalRuntimeStage::Error;
     m_reason = std::move(reason);
+    recordLifecycle(fmt::format(
+        "RUNTIME_ERROR generation={} previousStage={} newStage=Error reason={}",
+        m_generation,
+        runtimeStageName(previousStage),
+        m_reason
+    ));
     if (m_owner) m_owner->m_isPaused = true;
 }
 
@@ -84,7 +237,7 @@ bool UniversalRuntimeSession::restartAtFinerResolution() {
     }
 
     if (!m_oracle->restore(m_visibleRoot)) return false;
-    m_search.reset(m_oracle.get());
+    m_search.reset(m_oracle.get(), "restartAtFinerResolution");
 
     ++m_refinement;
     const auto nextDt = std::max(kMinStep, m_oracle->stepDt() * 0.5);
@@ -125,7 +278,7 @@ bool UniversalRuntimeSession::beginRecoveryFromToken(UniversalToken token, std::
     if (!m_oracle || token == kInvalidUniversalToken) return false;
     if (!m_oracle->restore(token)) return false;
 
-    m_search.reset(m_oracle.get());
+    m_search.reset(m_oracle.get(), "beginRecoveryFromToken");
 
     if (m_visibleRoot != kInvalidUniversalToken && m_visibleRoot != token) {
         m_oracle->discard(m_visibleRoot);
@@ -163,9 +316,52 @@ bool UniversalRuntimeSession::canonicalMatchesExpected(std::size_t index, Univer
 }
 
 void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
-    if (!m_oracle || m_stage != UniversalRuntimeStage::Searching) return;
+    if (m_stage != UniversalRuntimeStage::Searching) return;
+    if (!m_oracle) {
+        enterError(fmt::format(
+            "A) SEARCH CORE LOST AFTER BEGIN generation={} context=search-slice-no-oracle",
+            m_generation
+        ));
+        dumpLifecycle("search-slice-no-oracle");
+        return;
+    }
+    if (!validateSearchCoreInvariant("search-slice-enter")) return;
+
+    ++m_searchSliceCount;
+    const auto before = m_search.stats();
+    const bool traceSlice = m_searchSliceCount <= 8 || (m_searchSliceCount % 120U) == 0U;
+    if (traceSlice) {
+        log::info(
+            "SEARCH_SLICE_ENTER generation={} slice={} coreStage={} frontier={} elapsed={:.6f}s "
+            "expansions={} engineSteps={} resetSerial={} budget={}",
+            m_generation,
+            m_searchSliceCount,
+            searchStageName(before.stage),
+            before.frontierSize,
+            before.elapsedSeconds,
+            before.totalExpansions,
+            before.totalEngineSteps,
+            before.resetSerial,
+            expansionBudget
+        );
+    }
 
     auto stats = m_search.work(*m_oracle, std::max<std::size_t>(1, expansionBudget));
+
+    if (traceSlice) {
+        log::info(
+            "SEARCH_SLICE_EXIT generation={} slice={} coreStage={} frontier={} elapsed={:.6f}s "
+            "expansions={} engineSteps={} resetSerial={}",
+            m_generation,
+            m_searchSliceCount,
+            searchStageName(stats.stage),
+            stats.frontierSize,
+            stats.elapsedSeconds,
+            stats.totalExpansions,
+            stats.totalEngineSteps,
+            stats.resetSerial
+        );
+    }
 
     if (!m_oracle->restore(m_visibleRoot)) {
         enterError("C) RESTORE INCORRECTO: VISIBLE ROOT RESTORE FAILED: " + m_oracle->lastError());
@@ -198,6 +394,11 @@ void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
 
     if (stats.stage == UniversalSearchStage::Error) {
         enterError("B) ORACLE STEP NO AVANZA: UNIVERSAL SEARCH ERROR: " + m_oracle->lastError());
+        return;
+    }
+
+    if (m_stage == UniversalRuntimeStage::Searching) {
+        validateSearchCoreInvariant("search-slice-exit");
     }
 }
 
@@ -209,7 +410,7 @@ void UniversalRuntimeSession::startPlayback() {
         return;
     }
 
-    m_search.reset(m_oracle.get());
+    m_search.reset(m_oracle.get(), "startPlayback");
     if (m_lastSafePlayback != kInvalidUniversalToken) {
         m_oracle->discard(m_lastSafePlayback);
         m_lastSafePlayback = kInvalidUniversalToken;
