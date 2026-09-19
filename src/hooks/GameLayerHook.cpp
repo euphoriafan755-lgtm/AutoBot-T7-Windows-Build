@@ -107,6 +107,35 @@ bool g_universalInternalStep = false;
 autobot::presolve::UniversalRuntimeSession g_universalRuntime{};
 autobot::presolve::UniversalSearchRuntimeLiveness g_universalSearchLiveness{};
 PerfClock::time_point g_universalSearchLivenessStarted = PerfClock::now();
+std::size_t g_universalRuntimeCallDepth = 0;
+std::string_view g_universalRuntimeCallOperation = "none";
+
+char const* runtimeStageName(autobot::presolve::UniversalRuntimeStage stage) {
+    switch (stage) {
+        case autobot::presolve::UniversalRuntimeStage::Idle: return "Idle";
+        case autobot::presolve::UniversalRuntimeStage::Searching: return "Searching";
+        case autobot::presolve::UniversalRuntimeStage::Ready: return "Ready";
+        case autobot::presolve::UniversalRuntimeStage::Playing: return "Playing";
+        case autobot::presolve::UniversalRuntimeStage::Complete: return "Complete";
+        case autobot::presolve::UniversalRuntimeStage::Error: return "Error";
+    }
+    return "Unknown";
+}
+
+struct UniversalRuntimeCallScope {
+    std::string_view previousOperation;
+
+    explicit UniversalRuntimeCallScope(std::string_view operation)
+      : previousOperation(g_universalRuntimeCallOperation) {
+        ++g_universalRuntimeCallDepth;
+        g_universalRuntimeCallOperation = operation;
+    }
+
+    ~UniversalRuntimeCallScope() {
+        if (g_universalRuntimeCallDepth > 0) --g_universalRuntimeCallDepth;
+        g_universalRuntimeCallOperation = previousOperation;
+    }
+};
 bool g_universalSearchLivenessPassLogged = false;
 bool g_universalSearchLivenessFailLogged = false;
 std::size_t g_universalSearchSliceBudget = 8;
@@ -273,7 +302,10 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                 // callback returns without calling GJBaseGameLayer::update(dt).
                 owner->m_isPaused = false;
                 const auto searchSliceStart = PerfClock::now();
-                g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
+                {
+                    UniversalRuntimeCallScope runtimeScope("searchSlice");
+                    g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
+                }
                 g_universalSearchLastSliceMs = elapsedMs(searchSliceStart);
 
                 // Keep the outer frame responsive while using spare CPU when
@@ -425,7 +457,10 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
             if (g_universalRuntime.ready() || g_universalRuntime.playing()) {
                 releaseAuthoritativeFreeze(owner);
                 const auto recoveriesBefore = g_universalRuntime.recoveryCount();
-                g_universalRuntime.playbackFrame(static_cast<double>(dt));
+                {
+                    UniversalRuntimeCallScope runtimeScope("playbackFrame");
+                    g_universalRuntime.playbackFrame(static_cast<double>(dt));
+                }
                 if (g_universalRuntime.searching() && g_universalRuntime.recoveryCount() > recoveriesBefore) {
                     activateAuthoritativeFreeze(owner);
                     log::warn(
@@ -662,6 +697,47 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     }
 
     void startGame() {
+        const auto generationBefore = g_universalRuntime.generation();
+        const auto runtimeStageBefore = g_universalRuntime.stage();
+        const bool runtimeOwnsLayer = g_universalRuntime.owner() == this;
+
+        log::info(
+            "PLAYLAYER_STARTGAME generation={} runtimeStage={} runtimeOwnsLayer={} "
+            "runtimeCallDepth={} runtimeOperation={}",
+            generationBefore,
+            runtimeStageName(runtimeStageBefore),
+            runtimeOwnsLayer ? "YES" : "NO",
+            g_universalRuntimeCallDepth,
+            g_universalRuntimeCallOperation
+        );
+
+        if (g_universalRuntimeCallDepth > 0 && runtimeOwnsLayer) {
+            log::error(
+                "REENTRANT_LIFECYCLE startGame called while universal runtime call is active "
+                "generation={} runtimeStage={} operation={} depth={} action=RUN_GD_ORIGINAL_ONLY",
+                generationBefore,
+                runtimeStageName(runtimeStageBefore),
+                g_universalRuntimeCallOperation,
+                g_universalRuntimeCallDepth
+            );
+
+            // This startGame came from inside begin/search/restore/engine stepping.
+            // GD's original lifecycle is allowed to run, but AutoBot must not
+            // recursively reset/re-begin the same session while its core is on stack.
+            PlayLayer::startGame();
+
+            log::error(
+                "REENTRANT_LIFECYCLE_RETURN generation={} runtimeStage={} operation={} "
+                "runtimeCoreFrontier={} runtimeCoreExpansions={}",
+                g_universalRuntime.generation(),
+                runtimeStageName(g_universalRuntime.stage()),
+                g_universalRuntimeCallOperation,
+                g_universalRuntime.stats().frontierSize,
+                g_universalRuntime.stats().totalExpansions
+            );
+            return;
+        }
+
         m_fields->preRunFreezeActive = true;
         PlayLayer::startGame();
         beginPreRunFreeze();
@@ -749,8 +825,13 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             return;
         }
 
-        g_universalRuntime.reset();
-        if (!g_universalRuntime.begin(this)) {
+        g_universalRuntime.reset("PlayLayer::startGame normal lifecycle");
+        bool runtimeBeginOk = false;
+        {
+            UniversalRuntimeCallScope runtimeScope("begin");
+            runtimeBeginOk = g_universalRuntime.begin(this);
+        }
+        if (!runtimeBeginOk) {
             beginPreRunFreeze();
             log::error("UNIVERSAL_RUNTIME_ORACLE=FAIL reason={}", g_universalRuntime.reason());
             m_fields->autonomousHUD.updatePreRun(
@@ -761,6 +842,21 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             );
             return;
         }
+        const auto bootstrapStats = g_universalRuntime.stats();
+        log::info(
+            "RUNTIME_BOOTSTRAP_READY generation={} runtimeStage={} coreStage={} started={} "
+            "frontier={} elapsed={:.6f}s expansions={} engineSteps={} resetSerial={}",
+            g_universalRuntime.generation(),
+            runtimeStageName(g_universalRuntime.stage()),
+            static_cast<int>(bootstrapStats.stage),
+            bootstrapStats.started ? "YES" : "NO",
+            bootstrapStats.frontierSize,
+            bootstrapStats.elapsedSeconds,
+            bootstrapStats.totalExpansions,
+            bootstrapStats.totalEngineSteps,
+            bootstrapStats.resetSerial
+        );
+
         g_universalHUD = &m_fields->autonomousHUD;
         m_fields->preRunFreezeActive = true;
         activateAuthoritativeFreeze(this);
