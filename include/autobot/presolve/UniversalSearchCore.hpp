@@ -149,6 +149,7 @@ private:
         UniversalObservation observation{};
         UniversalCanonicalState canonical{};
         std::size_t nextCandidate = 0;
+        std::size_t expansionTier = std::numeric_limits<std::size_t>::max();
     };
 
     struct SeenState {
