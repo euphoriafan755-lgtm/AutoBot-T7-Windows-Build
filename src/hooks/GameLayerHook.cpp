@@ -109,6 +109,8 @@ autobot::presolve::UniversalSearchRuntimeLiveness g_universalSearchLiveness{};
 PerfClock::time_point g_universalSearchLivenessStarted = PerfClock::now();
 bool g_universalSearchLivenessPassLogged = false;
 bool g_universalSearchLivenessFailLogged = false;
+std::size_t g_universalSearchSliceBudget = 8;
+double g_universalSearchLastSliceMs = 0.0;
 autobot::ui::AutonomousHUD* g_universalHUD = nullptr;
 
 autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
@@ -270,7 +272,28 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                 // Keep the scheduler alive. Visible gameplay is frozen because this outer
                 // callback returns without calling GJBaseGameLayer::update(dt).
                 owner->m_isPaused = false;
-                g_universalRuntime.searchSlice(8);
+                const auto searchSliceStart = PerfClock::now();
+                g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
+                g_universalSearchLastSliceMs = elapsedMs(searchSliceStart);
+
+                // Keep the outer frame responsive while using spare CPU when
+                // oracle expansion is cheap. This budget is level-agnostic.
+                constexpr double kTargetSliceMs = 4.0;
+                constexpr std::size_t kMinSliceBudget = 1;
+                constexpr std::size_t kMaxSliceBudget = 64;
+                if (g_universalSearchLastSliceMs < kTargetSliceMs * 0.50
+                    && g_universalSearchSliceBudget < kMaxSliceBudget) {
+                    g_universalSearchSliceBudget = std::min(
+                        kMaxSliceBudget,
+                        g_universalSearchSliceBudget * 2U
+                    );
+                } else if (g_universalSearchLastSliceMs > kTargetSliceMs * 1.75
+                    && g_universalSearchSliceBudget > kMinSliceBudget) {
+                    g_universalSearchSliceBudget = std::max(
+                        kMinSliceBudget,
+                        g_universalSearchSliceBudget / 2U
+                    );
+                }
 
                 const auto liveStats = g_universalRuntime.stats();
                 const auto liveness = g_universalSearchLiveness.observe(
@@ -356,7 +379,7 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                         autobot::presolve::PreRunStage::Searching,
                         fmt::format(
                             "SEARCH t={:.1f}s eps={:.0f} exp={} steps={} depth={} frontier={} best={:.2f}% "
-                            "tier={} macro={} refine={} mem={:.1f}MiB ETA={}",
+                            "tier={} macro={} refine={} budget={} slice={:.2f}ms mem={:.1f}MiB ETA={}",
                             stats.elapsedSeconds,
                             stats.expansionsPerSecond,
                             stats.totalExpansions,
@@ -367,6 +390,8 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                             stats.strategyTier,
                             stats.currentMacroTicks,
                             g_universalRuntime.refinement(),
+                            g_universalSearchSliceBudget,
+                            g_universalSearchLastSliceMs,
                             static_cast<double>(stats.estimatedMemoryBytes) / (1024.0 * 1024.0),
                             stats.etaSeconds >= 0.0
                                 ? fmt::format("{:.1f}s", stats.etaSeconds)
@@ -743,6 +768,8 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         g_universalSearchLivenessStarted = PerfClock::now();
         g_universalSearchLivenessPassLogged = false;
         g_universalSearchLivenessFailLogged = false;
+        g_universalSearchSliceBudget = 8;
+        g_universalSearchLastSliceMs = 0.0;
         // SEARCHING must not pause the scheduler; the outer GJBaseGameLayer hook is
         // the freeze boundary and returns before visible gameplay can advance.
         m_isPaused = false;
