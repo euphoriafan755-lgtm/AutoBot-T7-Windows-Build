@@ -148,6 +148,7 @@ private:
         std::size_t metaIndex = 0;
         UniversalObservation observation{};
         UniversalCanonicalState canonical{};
+        std::size_t nextCandidate = 0;
     };
 
     struct SeenState {
@@ -194,6 +195,7 @@ private:
     std::vector<UniversalAction> m_policy;
     std::vector<UniversalCanonicalState> m_replayStates;
     std::size_t m_replayCursor = 0;
+    UniversalToken m_replayToken = kInvalidUniversalToken;
     std::size_t m_totalExpansions = 0;
     std::size_t m_totalEngineSteps = 0;
     std::size_t m_currentDepth = 0;
