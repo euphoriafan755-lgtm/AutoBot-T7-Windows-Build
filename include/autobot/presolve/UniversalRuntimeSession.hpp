@@ -4,9 +4,12 @@
 #include "autobot/presolve/UniversalSearchCore.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class PlayLayer;
@@ -27,7 +30,7 @@ public:
     using StepCallback = GeometryDashRuntimeOracle::StepCallback;
 
     bool begin(PlayLayer* layer);
-    void reset();
+    void reset(std::string_view reason = "explicit");
     void setStepCallback(StepCallback callback);
     void searchSlice(std::size_t expansionBudget);
     void playbackFrame(double realDt);
@@ -53,12 +56,16 @@ public:
     [[nodiscard]] std::size_t refinement() const { return m_refinement; }
     [[nodiscard]] std::size_t recoveryCount() const { return m_recoveryCount; }
     [[nodiscard]] std::size_t stallRecoveryCount() const { return m_stallRecoveryCount; }
+    [[nodiscard]] std::uint64_t generation() const { return m_generation; }
     [[nodiscard]] RuntimeOracleValidation validation() const;
 
 private:
     bool restartAtFinerResolution();
     bool beginRecoveryFromToken(UniversalToken token, std::string reason);
     bool canonicalMatchesExpected(std::size_t index, UniversalToken token) const;
+    bool validateSearchCoreInvariant(std::string_view context);
+    void recordLifecycle(std::string message);
+    void dumpLifecycle(std::string_view context) const;
     void enterError(std::string reason);
     void startPlayback();
 
@@ -74,8 +81,11 @@ private:
     std::size_t m_refinement = 0;
     std::size_t m_recoveryCount = 0;
     std::size_t m_stallRecoveryCount = 0;
+    std::size_t m_searchSliceCount = 0;
+    std::uint64_t m_generation = 0;
     double m_accumulator = 0.0;
     std::string m_reason = "IDLE";
+    std::deque<std::string> m_lifecycleTrace;
 };
 
 } // namespace autobot::presolve
