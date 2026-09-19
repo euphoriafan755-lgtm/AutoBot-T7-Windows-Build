@@ -244,21 +244,50 @@ struct GeometryDashRuntimeOracle::Impl {
         }
     }
 
-    void setButton(bool desired, bool& current, int button, bool player2) {
-        if (!layer || desired == current) return;
-        layer->queueButton(button, desired, player2, layer->m_gameState.m_levelTime);
+    bool setButton(bool desired, bool& current, int button, bool player2) {
+        if (!layer) {
+            error = "INPUT QUEUE REJECTED: layer unavailable";
+            validation.inputQueuePass = false;
+            return false;
+        }
+        if (desired == current) return true;
+
+        const auto before = layer->m_queuedButtons.size();
+        const auto timestamp = layer->m_gameState.m_levelTime;
+        layer->queueButton(button, desired, player2, timestamp);
+        ++validation.inputQueueChecks;
+
+        const bool appended = layer->m_queuedButtons.size() == before + 1U;
+        bool exact = false;
+        if (appended) {
+            auto const& queued = layer->m_queuedButtons.back();
+            exact = static_cast<int>(queued.m_button) == button
+                && queued.m_isPush == desired
+                && queued.m_isPlayer2 == player2
+                && std::abs(queued.m_timestamp - timestamp) <= 1e-12;
+        }
+
+        if (!appended || !exact) {
+            validation.inputQueuePass = false;
+            error = "INPUT QUEUE REJECTED: expected command was not queued exactly";
+            return false;
+        }
+
         current = desired;
+        return true;
     }
 
-    void applyAction(UniversalAction desired) {
-        setButton(desired.p1Hold, action.p1Hold, static_cast<int>(PlayerButton::Jump), false);
-        setButton(desired.p1Left, action.p1Left, static_cast<int>(PlayerButton::Left), false);
-        setButton(desired.p1Right, action.p1Right, static_cast<int>(PlayerButton::Right), false);
+    bool applyAction(UniversalAction desired) {
+        bool ok = true;
+        ok = setButton(desired.p1Hold, action.p1Hold, static_cast<int>(PlayerButton::Jump), false) && ok;
+        ok = setButton(desired.p1Left, action.p1Left, static_cast<int>(PlayerButton::Left), false) && ok;
+        ok = setButton(desired.p1Right, action.p1Right, static_cast<int>(PlayerButton::Right), false) && ok;
         if (layer && layer->m_player2) {
-            setButton(desired.p2Hold, action.p2Hold, static_cast<int>(PlayerButton::Jump), true);
-            setButton(desired.p2Left, action.p2Left, static_cast<int>(PlayerButton::Left), true);
-            setButton(desired.p2Right, action.p2Right, static_cast<int>(PlayerButton::Right), true);
+            ok = setButton(desired.p2Hold, action.p2Hold, static_cast<int>(PlayerButton::Jump), true) && ok;
+            ok = setButton(desired.p2Left, action.p2Left, static_cast<int>(PlayerButton::Left), true) && ok;
+            ok = setButton(desired.p2Right, action.p2Right, static_cast<int>(PlayerButton::Right), true) && ok;
         }
+        return ok;
     }
 
     CanonicalSections buildSections() const {
@@ -572,7 +601,9 @@ UniversalObservation GeometryDashRuntimeOracle::step(UniversalAction action) {
         m_impl->error = "engine step callback unavailable";
         return {};
     }
-    m_impl->applyAction(action);
+    if (!m_impl->applyAction(action)) {
+        return {};
+    }
     layer->m_isPaused = false;
     m_impl->callback(static_cast<float>(m_impl->dt));
     layer->m_isPaused = true;
