@@ -18,6 +18,7 @@ struct SearchVisibleState {
 enum class SearchLivenessState {
     Monitoring,
     Pass,
+    Stall,
     Fail,
 };
 
@@ -25,6 +26,7 @@ struct SearchLivenessResult {
     SearchLivenessState state = SearchLivenessState::Monitoring;
     std::string reason;
     std::size_t stagnantFrames = 0;
+    std::size_t stagnantBestFrames = 0;
     bool sawExpansion = false;
     bool sawDepthAdvance = false;
     bool sawFrontierChange = false;
