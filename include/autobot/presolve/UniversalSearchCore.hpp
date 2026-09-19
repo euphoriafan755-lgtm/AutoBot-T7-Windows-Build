@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -98,6 +100,8 @@ enum class UniversalSearchStage {
 
 struct UniversalSearchStats {
     UniversalSearchStage stage = UniversalSearchStage::Idle;
+    bool started = false;
+    std::size_t resetSerial = 0;
     std::size_t totalExpansions = 0;
     std::size_t totalEngineSteps = 0;
     std::size_t frontierSize = 0;
@@ -118,9 +122,19 @@ struct UniversalSearchStats {
 
 class UniversalSearchCore final {
 public:
+    using LifecycleCallback = std::function<void(
+        std::uint64_t generation,
+        UniversalSearchStage previousStage,
+        UniversalSearchStage newStage,
+        std::string_view reason,
+        std::size_t resetSerial
+    )>;
+
     bool begin(IUniversalStateOracle& oracle);
     UniversalSearchStats work(IUniversalStateOracle& oracle, std::size_t expansionBudget);
-    void reset(IUniversalStateOracle* oracle = nullptr);
+    void reset(IUniversalStateOracle* oracle = nullptr, std::string_view reason = "explicit");
+    void setLifecycleGeneration(std::uint64_t generation) { m_lifecycleGeneration = generation; }
+    void setLifecycleCallback(LifecycleCallback callback) { m_lifecycleCallback = std::move(callback); }
 
     // Changes only search ordering/granularity. Existing states are kept, so a
     // stall recovery never throws away a potentially valid branch.
@@ -206,6 +220,9 @@ private:
     std::size_t m_currentMacroTicks = 1;
     std::size_t m_strategyTier = 0;
     std::size_t m_stallRecoveries = 0;
+    std::size_t m_resetSerial = 0;
+    std::uint64_t m_lifecycleGeneration = 0;
+    LifecycleCallback m_lifecycleCallback;
     double m_bestProgress = 0.0;
     double m_rootProgress = 0.0;
     std::chrono::steady_clock::time_point m_startedAt{};
