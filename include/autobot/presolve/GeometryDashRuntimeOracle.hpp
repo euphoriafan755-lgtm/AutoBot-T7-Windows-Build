@@ -1,0 +1,39 @@
+#pragma once
+
+#include "autobot/presolve/UniversalSearchCore.hpp"
+
+#include <functional>
+#include <memory>
+#include <string>
+
+class PlayLayer;
+
+namespace autobot::presolve {
+
+class GeometryDashRuntimeOracle final : public IUniversalStateOracle {
+public:
+    using StepCallback = std::function<void(float)>;
+
+    explicit GeometryDashRuntimeOracle(PlayLayer* layer, double stepDt = 1.0 / 240.0);
+    ~GeometryDashRuntimeOracle() override;
+
+    GeometryDashRuntimeOracle(GeometryDashRuntimeOracle const&) = delete;
+    GeometryDashRuntimeOracle& operator=(GeometryDashRuntimeOracle const&) = delete;
+
+    void setStepCallback(StepCallback callback);
+    void setStepDt(double value);
+    [[nodiscard]] double stepDt() const;
+    [[nodiscard]] std::string const& lastError() const;
+
+    [[nodiscard]] UniversalObservation observe() const override;
+    [[nodiscard]] std::optional<UniversalToken> capture() override;
+    bool restore(UniversalToken token) override;
+    [[nodiscard]] UniversalObservation step(UniversalAction action) override;
+    void discard(UniversalToken token) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
+} // namespace autobot::presolve

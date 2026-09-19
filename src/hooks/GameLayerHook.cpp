@@ -6,6 +6,7 @@
 #include "autobot/control/InputController.hpp"
 #include "autobot/core/GameStateReader.hpp"
 #include "autobot/core/PerformanceMetrics.hpp"
+#include "autobot/presolve/UniversalRuntimeSession.hpp"
 #include "autobot/ui/AutonomousHUD.hpp"
 #include "autobot/ui/CollisionDebugOverlay.hpp"
 #include "autobot/ui/DiagnosticHUD.hpp"
@@ -101,6 +102,9 @@ struct AuthoritativeFreezeProbe {
 };
 
 AuthoritativeFreezeProbe g_authoritativeFreeze{};
+bool g_universalInternalStep = false;
+autobot::presolve::UniversalRuntimeSession g_universalRuntime{};
+autobot::ui::AutonomousHUD* g_universalHUD = nullptr;
 
 autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
     autobot::presolve::FreezeInvariantSnapshot snapshot{};
@@ -189,6 +193,90 @@ void verifyAuthoritativeFreezeRuntime(PlayLayer* layer) {
 
 class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
     void update(float dt) {
+        if (g_universalInternalStep) {
+            GJBaseGameLayer::update(dt);
+            return;
+        }
+
+        auto* owner = g_universalRuntime.owner();
+        const bool universalOwns = owner
+            && static_cast<GJBaseGameLayer*>(owner) == static_cast<GJBaseGameLayer*>(this);
+        if (universalOwns) {
+            g_universalRuntime.setStepCallback([this](float innerDt) {
+                g_universalInternalStep = true;
+                GJBaseGameLayer::update(innerDt);
+                g_universalInternalStep = false;
+            });
+
+            if (g_universalRuntime.searching()) {
+                ++g_authoritativeFreeze.gjBaseUpdateCalls;
+                owner->m_isPaused = true;
+                g_universalRuntime.searchSlice(32);
+                verifyAuthoritativeFreezeRuntime(owner);
+                if (g_universalHUD) {
+                    const auto stats = g_universalRuntime.stats();
+                    g_universalHUD->updatePreRun(
+                        autobot::presolve::PreRunStage::Searching,
+                        fmt::format(
+                            "ENGINE ORACLE SEARCH depth={} frontier={} unique={} expansions={} best={:.2f}% dt={:.7f}",
+                            stats.currentDepth, stats.frontierSize, stats.uniqueStates,
+                            stats.totalExpansions, stats.bestProgress, g_universalRuntime.stepDt()
+                        ),
+                        false,
+                        stats.bestProgress
+                    );
+                }
+                if (g_universalRuntime.ready()) {
+                    releaseAuthoritativeFreeze(owner);
+                    if (g_universalHUD) {
+                        g_universalHUD->updatePreRun(
+                            autobot::presolve::PreRunStage::Ready,
+                            fmt::format("ENGINE POLICY VERIFIED ticks={}", g_universalRuntime.policySize()),
+                            true,
+                            100.0
+                        );
+                    }
+                    log::info(
+                        "UNIVERSAL_ENGINE_REPLAY=PASS policyTicks={} dt={:.9f} refinement={}",
+                        g_universalRuntime.policySize(),
+                        g_universalRuntime.stepDt(),
+                        g_universalRuntime.refinement()
+                    );
+                }
+                return;
+            }
+
+            if (g_universalRuntime.ready() || g_universalRuntime.playing()) {
+                releaseAuthoritativeFreeze(owner);
+                g_universalRuntime.playbackFrame(static_cast<double>(dt));
+                if (g_universalRuntime.error()) {
+                    activateAuthoritativeFreeze(owner);
+                    if (g_universalHUD) {
+                        g_universalHUD->updatePreRun(
+                            autobot::presolve::PreRunStage::NotReady,
+                            g_universalRuntime.reason(),
+                            false,
+                            g_universalRuntime.stats().bestProgress
+                        );
+                    }
+                    log::error("UNIVERSAL_RUNTIME_PLAYBACK=FAIL reason={}", g_universalRuntime.reason());
+                }
+                return;
+            }
+
+            if (g_universalRuntime.error()) {
+                ++g_authoritativeFreeze.gjBaseUpdateCalls;
+                owner->m_isPaused = true;
+                verifyAuthoritativeFreezeRuntime(owner);
+                return;
+            }
+
+            if (g_universalRuntime.complete()) {
+                GJBaseGameLayer::update(dt);
+                return;
+            }
+        }
+
         if (authoritativeFreezeOwns(this)) {
             ++g_authoritativeFreeze.gjBaseUpdateCalls;
             auto* playLayer = g_authoritativeFreeze.owner;
@@ -323,12 +411,13 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         m_fields->baselineFingerprintValid = true;
 
         ++m_fields->worldGeneration;
-        if (!m_fields->collisionWorld.build(m_fields->world, parseTimeMs)) {
-            log::error("AutoBot T7: CollisionWorld build failed at PlayLayer::startGame lifecycle");
-            return false;
-        }
-        if (!m_fields->autonomousDriver.configureWorld(m_fields->world, m_fields->collisionWorld)) {
-            log::warn("AutoBot T7: TriggerWorldModel could not be built; causal trigger futures unavailable");
+        const bool collisionReady = m_fields->collisionWorld.build(m_fields->world, parseTimeMs);
+        if (!collisionReady) {
+            log::warn(
+                "AutoBot T7: diagnostic CollisionWorld build failed; universal engine-oracle remains available"
+            );
+        } else if (!m_fields->autonomousDriver.configureWorld(m_fields->world, m_fields->collisionWorld)) {
+            log::warn("AutoBot T7: diagnostic TriggerWorldModel could not be built");
         }
 
         auto const& metrics = m_fields->collisionWorld.metrics();
@@ -455,73 +544,66 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             );
         }
 
-        const auto initialSnapshot = autobot::core::GameStateReader::capture(this, m_fields->tick);
-        log::info("PRE_SOLVER_CALLED=YES snapshotValid={}", initialSnapshot.valid);
-        const bool preRunReady = m_fields->autonomousDriver.preparePreRun(
-            initialSnapshot,
-            m_fields->world,
-            m_fields->collisionWorld,
-            [this](autobot::presolve::PreRunStage stage) {
-                log::info("PRE-RUN: {}", autobot::presolve::toString(stage));
-                auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
-                m_fields->autonomousHUD.updatePreRun(
-                    stage,
-                    stage == autobot::presolve::PreRunStage::NotReady ? solution.reason : "WORKING",
-                    solution.fullPolicyReplayPassed,
-                    solution.simulatedCompletion
-                );
-            }
+        log::info(
+            "UNIVERSAL_PARSE_GATE objects={} runtimeRequiredUnknown={} manualUnsupported={} unknownClassified={}",
+            m_fields->world.objects.size(),
+            m_fields->world.runtimeRequiredUnknown,
+            m_fields->world.unsupportedGameplay,
+            m_fields->world.unknown
         );
-        auto const& solution = m_fields->autonomousDriver.preRunSolver().solution();
-        if (preRunReady) {
-            log::info(
-                "PRE_RUN_VERIFIED_SOLUTION nodes={} completion={:.1f}% replay={} replayTicks={} fatal={} unmodeled={} unresolved={}",
-                solution.nodes.size(),
-                solution.simulatedCompletion,
-                solution.fullPolicyReplayPassed,
-                solution.replayTicks,
-                solution.fatalCollisions,
-                solution.unmodeledMechanics,
-                solution.unresolvedBranches
-            );
-            log::info("FULL_POLICY_REPLAY_TEST=PASS");
-            log::info("PRE_SOLVER_READY=YES");
-            log::info("POLICY_NODES={}", solution.nodes.size());
-            log::info("POLICY_ATTACHED_TO_DRIVER=YES");
-            m_fields->autonomousHUD.updatePreRun(
-                autobot::presolve::PreRunStage::Ready,
-                solution.reason,
-                solution.fullPolicyReplayPassed,
-                solution.simulatedCompletion
-            );
-            m_fields->preRunFreezeActive = false;
-            releaseAuthoritativeFreeze(this);
-            m_isPaused = false;
-            log::info("AUTOPLAY START");
-        } else {
+        if (m_fields->world.runtimeRequiredUnknown != 0) {
             beginPreRunFreeze();
-            log::warn(
-                "PRE_SOLVER_READY=NO reason={} unmodeled={} unresolved={} sourceUnsupported={} unknown={} portals={}",
-                solution.reason,
-                solution.unmodeledMechanics,
-                solution.unresolvedBranches,
-                m_fields->world.unsupportedGameplay,
-                m_fields->world.unknown,
-                m_fields->world.portals
+            const auto reason = fmt::format(
+                "{} RAW RUNTIME TYPES UNKNOWN TO GD 2.2081 BINDINGS",
+                m_fields->world.runtimeRequiredUnknown
             );
-            log::warn("NOT READY: {}", solution.reason);
+            log::error("UNIVERSAL_RUNTIME_ORACLE=BLOCKED reason={}", reason);
+            m_fields->autonomousHUD.updatePreRun(
+                autobot::presolve::PreRunStage::NotReady, reason, false, 0.0
+            );
+            return;
+        }
+
+        g_universalRuntime.reset();
+        if (!g_universalRuntime.begin(this)) {
+            beginPreRunFreeze();
+            log::error("UNIVERSAL_RUNTIME_ORACLE=FAIL reason={}", g_universalRuntime.reason());
             m_fields->autonomousHUD.updatePreRun(
                 autobot::presolve::PreRunStage::NotReady,
-                solution.reason,
+                g_universalRuntime.reason(),
                 false,
-                solution.simulatedCompletion
+                0.0
             );
+            return;
         }
+        g_universalHUD = &m_fields->autonomousHUD;
+        m_fields->preRunFreezeActive = true;
+        activateAuthoritativeFreeze(this);
+        log::info(
+            "UNIVERSAL_RUNTIME_ORACLE=ACTIVE stepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
+            "mechanicsDelegatedToGD=YES",
+            g_universalRuntime.stepDt(),
+            m_fields->world.unsupportedGameplay
+        );
+        m_fields->autonomousHUD.updatePreRun(
+            autobot::presolve::PreRunStage::Searching,
+            "ENGINE RUNTIME ORACLE SEARCH",
+            false,
+            0.0
+        );
     }
 
     void postUpdate(float dt) {
+        if (g_universalInternalStep) {
+            PlayLayer::postUpdate(dt);
+            return;
+        }
         if (g_authoritativeFreeze.active && g_authoritativeFreeze.owner == this) {
             ++g_authoritativeFreeze.playLayerPostUpdateCalls;
+        }
+        if (g_universalRuntime.owns(this) && g_universalRuntime.complete()) {
+            m_fields->preRunFreezeActive = false;
+            m_isPaused = false;
         }
         if (m_fields->preRunFreezeActive) {
             m_isPaused = true;

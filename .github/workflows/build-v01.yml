@@ -23,6 +23,8 @@ jobs:
           mkdir -p ci-logs ci-artifacts
           printf 'NOT_RUN\n' > ci-logs/static-tests-result.txt
           printf 'NOT_RUN\n' > ci-logs/general-solver-result.txt
+          printf 'NOT_RUN\n' > ci-logs/universal-search-result.txt
+          printf 'NOT_RUN\n' > ci-logs/universal-suite-result.txt
           printf 'NOT_RUN\n' > ci-logs/model-truth-result.txt
           printf 'NOT_RUN\n' > ci-logs/action-countdown-result.txt
           printf 'NOT_RUN\n' > ci-logs/full-presolve-result.txt
@@ -106,6 +108,16 @@ jobs:
           "${CXX[@]}" tests/GeneralSolverInvariantTest.cpp src/solver/ActionGenerator.cpp src/solver/AdaptiveSearchBudget.cpp src/solver/PhysicsModels.cpp src/solver/TrajectoryScorer.cpp -o ci-tests/general-solver.exe
           run_test GENERAL_SOLVER_INVARIANTS ./ci-tests/general-solver.exe
           printf 'PASS\n' > ci-logs/general-solver-result.txt
+
+          "${CXX[@]}" tests/UniversalSearchCoreTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-search.exe
+          run_test UNIVERSAL_SEARCH_CORE ./ci-tests/universal-search.exe
+          printf 'PASS\n' > ci-logs/universal-search-result.txt
+
+          "${CXX[@]}" tests/UniversalMechanicsSuiteTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-suite.exe
+          echo '=== UNIVERSAL_GENERATED_MECHANICS_SUITE ===' | tee -a ci-logs/static-tests.log ci-logs/universal-suite-test.log
+          ./ci-tests/universal-suite.exe 2>&1 | tee -a ci-logs/static-tests.log ci-logs/universal-suite-test.log
+          grep -q '^UNIVERSAL_GENERATED_MECHANICS_SUITE=PASS' ci-logs/universal-suite-test.log
+          printf 'PASS\n' > ci-logs/universal-suite-result.txt
 
           COMMON=(
             src/presolve/PreRunSolver.cpp
@@ -205,6 +217,8 @@ jobs:
           ARCHIVE_CODE=$?
           STATIC="$(tr -d '\r\n ' < ci-logs/static-tests-result.txt 2>/dev/null)"
           GENERAL="$(tr -d '\r\n ' < ci-logs/general-solver-result.txt 2>/dev/null)"
+          UNIVERSAL_SEARCH="$(tr -d '\r\n ' < ci-logs/universal-search-result.txt 2>/dev/null)"
+          UNIVERSAL_SUITE="$(tr -d '\r\n ' < ci-logs/universal-suite-result.txt 2>/dev/null)"
           MODEL="$(tr -d '\r\n ' < ci-logs/model-truth-result.txt 2>/dev/null)"
           COUNTDOWN="$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt 2>/dev/null)"
           PRESOLVER="$(tr -d '\r\n ' < ci-logs/full-presolve-result.txt 2>/dev/null)"
@@ -226,6 +240,8 @@ jobs:
           BUILD COMMIT: $BUILD_COMMIT
           STATIC INVARIANTS: $STATIC
           GENERAL_SOLVER_INVARIANTS: $GENERAL
+          UNIVERSAL_SEARCH_CORE: $UNIVERSAL_SEARCH
+          UNIVERSAL_GENERATED_MECHANICS_SUITE: $UNIVERSAL_SUITE
           MODEL_TRUTH_TESTS: $MODEL
           ACTION_COUNTDOWN_TEST: $COUNTDOWN
           FULL_LEVEL_PRE_SOLVER_TESTS: $PRESOLVER
@@ -241,7 +257,7 @@ jobs:
           SOURCE / BINARY COMMIT MATCH: $SOURCE_BINARY
           REPRODUCIBILITY: $SOURCE_BINARY
 
-          ROOT CAUSE FIX: NOT READY is gated at authoritative GJBaseGameLayer::update; legacy visual/color objects and optional coins are audited as gameplay-neutral while unresolved gameplay mechanics still block READY; FULL_POLICY_REPLAY remains unchanged.
+          ROOT CAUSE FIX: production pre-solve uses Geometry Dash 2.2081 itself as the state-transition oracle through checkpoint capture/restore and authoritative GJBaseGameLayer stepping; known runtime GameObjectType semantics no longer depend on the legacy manual-mechanics whitelist; search has no total expansion/depth cutoff and verifies the discovered policy by full engine replay before visible playback.
           PRE_RUN_FREEZE_TEST: $PRESOLVER
           FULL_POLICY_REPLAY_TEST: $PRESOLVER
           BOT HOLD AUTHORITY: InputController::botHolding
@@ -259,7 +275,8 @@ jobs:
           FULL-LEVEL PRE-SOLVER = COMPILED IF FINAL GATE PASSES
           PRE-RUN AUTOPLAY = PENDING USER RUNTIME
           GENERAL SOLVER GAMEPLAY = PENDING USER RUNTIME
-          UNIVERSAL GD SOLVER = NOT YET VERIFIED
+          UNIVERSAL ENGINE-ORACLE ARCHITECTURE = COMPILED IF FINAL GATE PASSES
+          UNIVERSAL ANY-LEVEL GAMEPLAY = PENDING USER RUNTIME
           MODEL TRUTH GATE = PENDING USER RETEST
           EOF
           cp ci-logs/build.log ci-artifacts/build.log
@@ -271,9 +288,10 @@ jobs:
           cp ci-logs/trigger-causal-test.log ci-artifacts/trigger-causal-test.log
           cp ci-logs/dual-joint-test.log ci-artifacts/dual-joint-test.log
           cp ci-logs/unseen-benchmark-test.log ci-artifacts/unseen-benchmark-test.log
+          cp ci-logs/universal-suite-test.log ci-artifacts/universal-suite-test.log
           mkdir -p ci-artifacts/ci-logs
           cp -R ci-logs/. ci-artifacts/ci-logs/
-          (cd ci-artifacts && : > SHA256SUMS.txt && for f in AutoBot-T7-v0.1.geode AutoBot-T7-v0.1-source.zip BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log full-presolve-test.log general-world-planner-test.log portal-aware-future-test.log trigger-causal-test.log dual-joint-test.log unseen-benchmark-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
+          (cd ci-artifacts && : > SHA256SUMS.txt && for f in AutoBot-T7-v0.1.geode AutoBot-T7-v0.1-source.zip BUILD-REPORT.txt build.log model-truth-test.log action-countdown-test.log full-presolve-test.log general-world-planner-test.log portal-aware-future-test.log trigger-causal-test.log dual-joint-test.log unseen-benchmark-test.log universal-suite-test.log; do [ -s "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done)
           printf 'ARCHIVE_CODE=%s\nLINK=%s\nPACKAGE=%s\nSOURCE_BINARY=%s\n' "$ARCHIVE_CODE" "$LINK" "$PACKAGE" "$SOURCE_BINARY" > ci-logs/final-gate.txt
           exit 0
 
@@ -292,6 +310,8 @@ jobs:
           set -euo pipefail
           test "$(tr -d '\r\n ' < ci-logs/static-tests-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/general-solver-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/universal-search-result.txt)" = PASS
+          test "$(tr -d '\r\n ' < ci-logs/universal-suite-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/model-truth-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/action-countdown-result.txt)" = PASS
           test "$(tr -d '\r\n ' < ci-logs/full-presolve-result.txt)" = PASS
@@ -312,6 +332,8 @@ jobs:
           echo 'DYNAMIC_COLLIDER_SYNC_INVARIANTS=PASS'
           echo 'INPUT_CONTROLLER_STATE_MACHINE=PASS'
           echo 'GENERAL_SOLVER_INVARIANTS=PASS'
+          echo 'UNIVERSAL_SEARCH_CORE=PASS'
+          grep '^UNIVERSAL_GENERATED_MECHANICS_SUITE=PASS' ci-logs/universal-suite-test.log
           echo 'MODEL_TRUTH_TESTS=PASS'
           echo 'ACTION_COUNTDOWN_TEST=PASS'
           grep '^FULL_LEVEL_PARSE=PASS' ci-logs/full-presolve-test.log

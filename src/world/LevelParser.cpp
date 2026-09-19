@@ -170,6 +170,60 @@ bool isLegacyVisualOnlyObjectID(int objectID) {
     }
 }
 
+bool isKnownRuntimeGameObjectType(GameObjectType type) {
+    switch (type) {
+        case GameObjectType::Solid:
+        case GameObjectType::Hazard:
+        case GameObjectType::InverseGravityPortal:
+        case GameObjectType::NormalGravityPortal:
+        case GameObjectType::ShipPortal:
+        case GameObjectType::CubePortal:
+        case GameObjectType::Decoration:
+        case GameObjectType::YellowJumpPad:
+        case GameObjectType::PinkJumpPad:
+        case GameObjectType::GravityPad:
+        case GameObjectType::YellowJumpRing:
+        case GameObjectType::PinkJumpRing:
+        case GameObjectType::GravityRing:
+        case GameObjectType::InverseMirrorPortal:
+        case GameObjectType::NormalMirrorPortal:
+        case GameObjectType::BallPortal:
+        case GameObjectType::RegularSizePortal:
+        case GameObjectType::MiniSizePortal:
+        case GameObjectType::UfoPortal:
+        case GameObjectType::Modifier:
+        case GameObjectType::Breakable:
+        case GameObjectType::SecretCoin:
+        case GameObjectType::DualPortal:
+        case GameObjectType::SoloPortal:
+        case GameObjectType::Slope:
+        case GameObjectType::WavePortal:
+        case GameObjectType::RobotPortal:
+        case GameObjectType::TeleportPortal:
+        case GameObjectType::GreenRing:
+        case GameObjectType::Collectible:
+        case GameObjectType::UserCoin:
+        case GameObjectType::DropRing:
+        case GameObjectType::SpiderPortal:
+        case GameObjectType::RedJumpPad:
+        case GameObjectType::RedJumpRing:
+        case GameObjectType::CustomRing:
+        case GameObjectType::DashRing:
+        case GameObjectType::GravityDashRing:
+        case GameObjectType::CollisionObject:
+        case GameObjectType::Special:
+        case GameObjectType::SwingPortal:
+        case GameObjectType::GravityTogglePortal:
+        case GameObjectType::SpiderOrb:
+        case GameObjectType::SpiderPad:
+        case GameObjectType::EnterEffectObject:
+        case GameObjectType::TeleportOrb:
+        case GameObjectType::AnimatedHazard:
+            return true;
+    }
+    return false;
+}
+
 bool isExplicitGameplayNeutral(GameObjectType rawType, int objectID) {
     if (isLegacyVisualOnlyObjectID(objectID)) return true;
     switch (rawType) {
@@ -373,6 +427,7 @@ bool LevelParser::snapshotObjectAt(
     copy.rawGameObjectType = static_cast<int>(object->m_objectType);
     copy.type = classify(object->m_objectType, object->m_objectID);
     copy.v01Support = classifyV01Support(object->m_objectType, object->m_objectID);
+    copy.runtimeTypeKnown = isKnownRuntimeGameObjectType(object->m_objectType);
     copy.x = realPosition.x;
     copy.y = realPosition.y;
     copy.nodeX = nodePosition.x;
@@ -470,6 +525,7 @@ StaticWorld LevelParser::parse(PlayLayer* playLayer) {
             world.unsupportedAudit.push_back(audit);
             if (audit.gameplayRelevant) ++world.unsupportedGameplay;
         }
+        if (!copy.runtimeTypeKnown) ++world.runtimeRequiredUnknown;
         world.objects.push_back(copy);
     }
 

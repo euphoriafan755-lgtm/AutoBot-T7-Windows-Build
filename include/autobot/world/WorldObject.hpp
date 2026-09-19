@@ -95,6 +95,10 @@ struct WorldObject {
     int rawGameObjectType = -1;
     GameplayObjectType type = GameplayObjectType::Unknown;
     V01Support v01Support = V01Support::NotSupported;
+    // True when the raw GameObjectType is known to GD 2.2081. The universal
+    // runtime oracle delegates its semantics to Geometry Dash itself, so a
+    // known runtime type is never treated as an unknown required mechanic.
+    bool runtimeTypeKnown = false;
 
     // World/real position used by CollisionWorld.
     float x = 0.0f;
@@ -163,6 +167,7 @@ struct StaticWorld {
     std::size_t decorations = 0;
     std::size_t unknown = 0;
     std::size_t unsupportedGameplay = 0;
+    std::size_t runtimeRequiredUnknown = 0;
 };
 
 } // namespace autobot::world
