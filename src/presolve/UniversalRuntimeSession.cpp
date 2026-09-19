@@ -262,7 +262,12 @@ void UniversalRuntimeSession::playbackFrame(double realDt) {
         m_accumulator -= step;
 
         if (!observation.valid) {
-            enterError("B) ORACLE STEP NO AVANZA: RUNTIME OBSERVATION INVALID");
+            const auto validation = m_oracle->validation();
+            if (!validation.inputQueuePass) {
+                enterError("G) READY PERO INPUT NO SALE: " + m_oracle->lastError());
+            } else {
+                enterError("B) ORACLE STEP NO AVANZA: RUNTIME OBSERVATION INVALID: " + m_oracle->lastError());
+            }
             break;
         }
 
