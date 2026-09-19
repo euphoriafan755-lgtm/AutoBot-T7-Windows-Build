@@ -117,6 +117,9 @@ void UniversalSearchCore::clearFrontierTokens(IUniversalStateOracle& oracle) {
 void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
     if (oracle) {
         clearFrontierTokens(*oracle);
+        if (m_replayToken != kInvalidUniversalToken && m_replayToken != m_rootToken) {
+            oracle->discard(m_replayToken);
+        }
         if (m_rootToken != kInvalidUniversalToken) oracle->discard(m_rootToken);
     } else {
         m_frontier.clear();
@@ -133,6 +136,7 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
     m_policy.clear();
     m_replayStates.clear();
     m_replayCursor = 0;
+    m_replayToken = kInvalidUniversalToken;
     m_totalExpansions = 0;
     m_totalEngineSteps = 0;
     m_currentDepth = 0;
@@ -268,7 +272,11 @@ void UniversalSearchCore::prioritizeFrontier() {
     };
 
     if (m_frontier.size() > 1) {
-        std::stable_sort(m_frontier.begin(), m_frontier.end(), better);
+        auto begin = m_frontier.begin();
+        if (m_frontier.front().nextCandidate > 0) ++begin;
+        if (std::distance(begin, m_frontier.end()) > 1) {
+            std::stable_sort(begin, m_frontier.end(), better);
+        }
     }
     if (m_nextFrontier.size() > 1) {
         std::stable_sort(m_nextFrontier.begin(), m_nextFrontier.end(), better);
@@ -290,13 +298,23 @@ bool UniversalSearchCore::beginReplay(IUniversalStateOracle& oracle, std::size_t
         return false;
     }
 
+    if (m_replayToken != kInvalidUniversalToken && m_replayToken != m_rootToken) {
+        oracle.discard(m_replayToken);
+    }
     m_replayStates.clear();
     m_replayCursor = 0;
+    m_replayToken = m_rootToken;
     m_stage = UniversalSearchStage::Replaying;
     return true;
 }
 
 UniversalSearchStats UniversalSearchCore::replayWork(IUniversalStateOracle& oracle, std::size_t budget) {
+    if (m_stage != UniversalSearchStage::Replaying || budget == 0) return stats();
+    if (m_replayToken == kInvalidUniversalToken || !oracle.restore(m_replayToken)) {
+        m_stage = UniversalSearchStage::Error;
+        return stats();
+    }
+
     std::size_t done = 0;
     while (done < budget && m_replayCursor < m_policy.size()) {
         const auto observation = oracle.step(m_policy[m_replayCursor]);
@@ -309,21 +327,26 @@ UniversalSearchStats UniversalSearchCore::replayWork(IUniversalStateOracle& orac
             break;
         }
 
-        auto replayToken = oracle.capture();
-        if (!replayToken) {
+        auto nextReplayToken = oracle.capture();
+        if (!nextReplayToken) {
             m_stage = UniversalSearchStage::Error;
             break;
         }
 
-        auto canonical = oracle.canonicalState(*replayToken);
-        oracle.discard(*replayToken);
+        auto canonical = oracle.canonicalState(*nextReplayToken);
         if (!canonical) {
+            oracle.discard(*nextReplayToken);
             m_stage = UniversalSearchStage::Error;
             break;
         }
 
+        if (m_replayToken != kInvalidUniversalToken && m_replayToken != m_rootToken) {
+            oracle.discard(m_replayToken);
+        }
+        m_replayToken = *nextReplayToken;
         m_replayStates.push_back(std::move(*canonical));
         m_bestProgress = std::max(m_bestProgress, observation.progress);
+
         if (observation.complete) {
             m_stage = UniversalSearchStage::Ready;
             break;
@@ -335,6 +358,13 @@ UniversalSearchStats UniversalSearchCore::replayWork(IUniversalStateOracle& orac
         m_stage = observation.valid && !observation.dead && observation.complete
             ? UniversalSearchStage::Ready
             : UniversalSearchStage::Error;
+    }
+
+    if (m_stage == UniversalSearchStage::Ready || m_stage == UniversalSearchStage::Error) {
+        if (m_replayToken != kInvalidUniversalToken && m_replayToken != m_rootToken) {
+            oracle.discard(m_replayToken);
+        }
+        m_replayToken = kInvalidUniversalToken;
     }
 
     if (m_stage == UniversalSearchStage::Ready) {
@@ -366,13 +396,7 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
             break;
         }
 
-        if (!oracle.restore(entry.token)) {
-            if (entry.token != m_rootToken) oracle.discard(entry.token);
-            m_stage = UniversalSearchStage::Error;
-            break;
-        }
-
-        auto const parentDepth = m_meta[entry.metaIndex].depth;
+        const auto parentDepth = m_meta[entry.metaIndex].depth;
         m_currentDepth = std::max(m_currentDepth, parentDepth);
 
         auto actions = actionsFor(entry.observation.dual, entry.observation.platformer);
@@ -382,76 +406,100 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
                 return (a == previous) && !(b == previous);
             });
         }
-        const auto durations = durationsFor(m_strategyTier, entry.observation.dual, entry.observation.platformer);
 
-        // A time slice always finishes the current decision state. This avoids
-        // silently dropping untried actions when a macro branch reaches the
-        // nominal slice budget.
-        for (auto const action : actions) {
-            for (auto const duration : durations) {
-                if (!oracle.restore(entry.token)) {
-                    m_stage = UniversalSearchStage::Error;
-                    break;
-                }
+        if (entry.expansionTier == std::numeric_limits<std::size_t>::max()) {
+            entry.expansionTier = m_strategyTier;
+        }
+        const auto durations = durationsFor(
+            entry.expansionTier,
+            entry.observation.dual,
+            entry.observation.platformer
+        );
+        const auto candidateCount = actions.size() * durations.size();
 
-                m_currentMacroTicks = duration;
-                const auto advanced = advanceAction(oracle, action, duration);
-                ++m_totalExpansions;
-                ++expandedThisCall;
-                m_totalEngineSteps += advanced.ticks;
+        while (entry.nextCandidate < candidateCount
+            && expandedThisCall < expansionBudget
+            && m_stage == UniversalSearchStage::Searching) {
+            const auto candidate = entry.nextCandidate++;
+            const auto actionIndex = candidate / durations.size();
+            const auto durationIndex = candidate % durations.size();
+            const auto action = actions[actionIndex];
+            const auto duration = durations[durationIndex];
 
-                const auto observation = advanced.observation;
-                if (!observation.valid || observation.dead || advanced.ticks == 0) continue;
-
-                m_bestProgress = std::max(m_bestProgress, observation.progress);
-                const auto childDepth = parentDepth + advanced.ticks;
-                m_currentDepth = std::max(m_currentDepth, childDepth);
-
-                auto token = oracle.capture();
-                if (!token || *token == kInvalidUniversalToken) {
-                    m_stage = UniversalSearchStage::Error;
-                    break;
-                }
-
-                auto canonical = oracle.canonicalState(*token);
-                if (!canonical) {
-                    oracle.discard(*token);
-                    m_stage = UniversalSearchStage::Error;
-                    break;
-                }
-
-                if (shouldPrune(*canonical, childDepth)) {
-                    oracle.discard(*token);
-                    continue;
-                }
-                remember(*canonical, childDepth);
-
-                const auto childMeta = m_meta.size();
-                m_meta.push_back({entry.metaIndex, action, childDepth, advanced.ticks});
-
-                if (observation.complete) {
-                    oracle.discard(*token);
-                    if (entry.token != m_rootToken) oracle.discard(entry.token);
-                    if (!beginReplay(oracle, childMeta)) break;
-                    return replayWork(oracle, std::numeric_limits<std::size_t>::max());
-                }
-
-                FrontierEntry child{*token, childMeta, observation, std::move(*canonical)};
-                if (observation.progress > entry.observation.progress + 1e-9) {
-                    m_frontier.push_back(std::move(child));
-                } else {
-                    m_nextFrontier.push_back(std::move(child));
-                }
+            if (!oracle.restore(entry.token)) {
+                m_stage = UniversalSearchStage::Error;
+                break;
             }
-            if (m_stage != UniversalSearchStage::Searching) break;
+
+            m_currentMacroTicks = duration;
+            const auto advanced = advanceAction(oracle, action, duration);
+            ++m_totalExpansions;
+            ++expandedThisCall;
+            m_totalEngineSteps += advanced.ticks;
+
+            const auto observation = advanced.observation;
+            if (!observation.valid || observation.dead || advanced.ticks == 0) continue;
+
+            m_bestProgress = std::max(m_bestProgress, observation.progress);
+            const auto childDepth = parentDepth + advanced.ticks;
+            m_currentDepth = std::max(m_currentDepth, childDepth);
+
+            auto token = oracle.capture();
+            if (!token || *token == kInvalidUniversalToken) {
+                m_stage = UniversalSearchStage::Error;
+                break;
+            }
+
+            auto canonical = oracle.canonicalState(*token);
+            if (!canonical) {
+                oracle.discard(*token);
+                m_stage = UniversalSearchStage::Error;
+                break;
+            }
+
+            if (shouldPrune(*canonical, childDepth)) {
+                oracle.discard(*token);
+                continue;
+            }
+            remember(*canonical, childDepth);
+
+            const auto childMeta = m_meta.size();
+            m_meta.push_back({entry.metaIndex, action, childDepth, advanced.ticks});
+
+            if (observation.complete) {
+                oracle.discard(*token);
+                if (entry.token != m_rootToken) oracle.discard(entry.token);
+                if (!beginReplay(oracle, childMeta)) break;
+
+                const auto remaining = expansionBudget - expandedThisCall;
+                return remaining > 0 ? replayWork(oracle, remaining) : stats();
+            }
+
+            FrontierEntry child{*token, childMeta, observation, std::move(*canonical)};
+            if (observation.progress > entry.observation.progress + 1e-9) {
+                m_frontier.push_back(std::move(child));
+            } else {
+                m_nextFrontier.push_back(std::move(child));
+            }
+        }
+
+        if (m_stage != UniversalSearchStage::Searching) {
+            if (entry.token != m_rootToken) oracle.discard(entry.token);
+            break;
+        }
+
+        if (entry.nextCandidate < candidateCount) {
+            // Preserve the exact decision-state continuation at the front. No
+            // child may overtake it until every candidate from this parent has
+            // been considered, matching an uninterrupted expansion exactly.
+            m_frontier.push_front(std::move(entry));
+            break;
         }
 
         if (entry.token != m_rootToken) oracle.discard(entry.token);
-        if (m_stage != UniversalSearchStage::Searching) break;
 
-        // Best-first must be true at every decision boundary. Waiting for an
-        // exact expansion-count modulus can accidentally degrade into broad
-        // breadth-first exploration because one node may emit many candidates.
+        // This decision state is now complete. Only at this boundary may the
+        // best-first ordering choose the next state.
         prioritizeFrontier();
     }
 
