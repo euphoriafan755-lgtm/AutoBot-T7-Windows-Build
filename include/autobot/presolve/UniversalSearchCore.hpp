@@ -79,6 +79,12 @@ public:
     [[nodiscard]] virtual UniversalObservation step(UniversalAction action) = 0;
     virtual void discard(UniversalToken token) = 0;
     [[nodiscard]] virtual std::optional<UniversalCanonicalState> canonicalState(UniversalToken token) const = 0;
+
+    // Changes only on discrete gameplay events that can alter which input is
+    // correct (mode/gravity/grounded transitions, trigger activation, timers,
+    // etc.). Continuous position/velocity changes must not increment it.
+    // Macro stepping stops at an epoch change and returns control to search.
+    [[nodiscard]] virtual std::uint64_t decisionEpoch() const { return 0; }
 };
 
 enum class UniversalSearchStage {
