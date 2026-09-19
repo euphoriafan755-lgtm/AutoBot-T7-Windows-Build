@@ -1,0 +1,36 @@
+name: Check Geode Index status
+
+on:
+  push:
+    branches:
+      - check-geode-status
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+        with:
+          version: v3.7.4
+
+      - name: Login
+        shell: bash
+        run: |
+          set -euo pipefail
+          geode index login --github-token "${GH_TOKEN}"
+
+      - name: Check status
+        shell: bash
+        run: |
+          set +e
+          echo "=== PUBLISHED ==="
+          geode index mods published
+          echo "=== PENDING ==="
+          geode index mods pending
