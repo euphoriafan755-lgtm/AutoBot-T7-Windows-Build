@@ -12,7 +12,10 @@ bool UniversalSearchRuntimeLiveness::visibleFrozen(SearchVisibleState const& a, 
         && !b.dead;
 }
 
-void UniversalSearchRuntimeLiveness::reset(UniversalSearchStats const& initial, SearchVisibleState const& visible) {
+void UniversalSearchRuntimeLiveness::reset(
+    UniversalSearchStats const& initial,
+    SearchVisibleState const& visible
+) {
     m_initial = initial;
     m_last = initial;
     m_visible = visible;
@@ -32,30 +35,44 @@ SearchLivenessResult UniversalSearchRuntimeLiveness::observe(
         return m_result;
     }
 
-    // Expansion liveness applies to the search phase only. Once the core enters
-    // full-policy replay, totalExpansions intentionally stops increasing.
     if (stats.stage == UniversalSearchStage::Replaying || stats.stage == UniversalSearchStage::Ready) {
         m_result.stagnantFrames = 0;
+        m_result.stagnantBestFrames = 0;
         m_last = stats;
         return m_result;
     }
 
-    if (stats.totalExpansions > m_last.totalExpansions) {
+    const bool expanded = stats.totalExpansions > m_last.totalExpansions;
+    const bool improved = stats.bestProgress > m_last.bestProgress + 1e-9;
+
+    if (expanded) {
         m_result.stagnantFrames = 0;
         m_result.sawExpansion = true;
     } else {
         ++m_result.stagnantFrames;
     }
-    m_result.sawDepthAdvance = m_result.sawDepthAdvance || stats.currentDepth > m_initial.currentDepth;
-    m_result.sawFrontierChange = m_result.sawFrontierChange || stats.frontierSize != m_initial.frontierSize;
-    m_result.sawBestAdvance = m_result.sawBestAdvance || stats.bestProgress > m_initial.bestProgress + 1e-9;
 
-    if (m_result.stagnantFrames >= 120) {
-        m_result.state = SearchLivenessState::Fail;
-        m_result.reason = "SEARCH DRIVER STALLED";
-    } else if (elapsedSeconds >= 2.0 && stats.totalExpansions == 0) {
-        m_result.state = SearchLivenessState::Fail;
-        m_result.reason = "SEARCH DRIVER STALLED: ZERO EXPANSIONS AFTER 2S";
+    if (improved) {
+        m_result.stagnantBestFrames = 0;
+        m_result.sawBestAdvance = true;
+    } else if (expanded) {
+        ++m_result.stagnantBestFrames;
+    }
+
+    m_result.sawDepthAdvance = m_result.sawDepthAdvance
+        || stats.currentDepth > m_initial.currentDepth;
+    m_result.sawFrontierChange = m_result.sawFrontierChange
+        || stats.frontierSize != m_initial.frontierSize;
+
+    if (elapsedSeconds >= 2.0 && stats.totalExpansions == 0) {
+        m_result.state = SearchLivenessState::Stall;
+        m_result.reason = "ZERO EXPANSIONS AFTER 2S";
+    } else if (m_result.stagnantFrames >= 120) {
+        m_result.state = SearchLivenessState::Stall;
+        m_result.reason = "NO EXPANSIONS FOR 120 SEARCH SLICES";
+    } else if (m_result.stagnantBestFrames >= 300 && stats.totalExpansions > m_initial.totalExpansions) {
+        m_result.state = SearchLivenessState::Stall;
+        m_result.reason = "NO BEST-PROGRESS IMPROVEMENT FOR 300 ACTIVE SLICES";
     } else if (elapsedSeconds >= 2.0
         && m_result.sawExpansion
         && (m_result.sawDepthAdvance || m_result.sawFrontierChange)) {
