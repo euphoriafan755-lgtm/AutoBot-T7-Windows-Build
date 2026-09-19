@@ -47,6 +47,7 @@ public:
     [[nodiscard]] UniversalObservation step(UniversalAction action) override;
     void discard(UniversalToken token) override;
     [[nodiscard]] std::optional<UniversalCanonicalState> canonicalState(UniversalToken token) const override;
+    [[nodiscard]] std::uint64_t decisionEpoch() const override;
 
 private:
     struct Impl;
