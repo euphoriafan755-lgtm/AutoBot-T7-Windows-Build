@@ -1,0 +1,91 @@
+name: Publish AutoBot T7 v0.1.1 to Geode Index
+
+on:
+  push:
+    branches:
+      - geode-index-publish-011
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_ARTIFACT_ID: "10577540227"
+      EXPECTED_RUN_ID: "35418888331"
+      EXPECTED_COMMIT: "79bb096ac6948b2cdb62bd27bb0baaff099ef02d"
+      EXPECTED_VERSION: "0.1.1"
+      EXPECTED_SHA256: "8f4355f0a983fcbbfb969206421a132e9cdaba2df97ffff6c171e68a51557789"
+      GEODE_FILE: "AutoBot-T7-v0.1.1.geode"
+      MOD_ID: "thiago7tv.autobot-t7"
+      DOWNLOAD_URL: "https://github.com/euphoriafan755-lgtm/AutoBot-T7-Windows-Build/releases/download/v0.1.1/AutoBot-T7-v0.1.1.geode"
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download exact CI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api             -H "Accept: application/vnd.github+json"             "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${EXPECTED_ARTIFACT_ID}/zip"             > artifact.zip
+          mkdir artifact
+          unzip -q artifact.zip -d artifact
+          test -s "artifact/${GEODE_FILE}"
+          echo "${EXPECTED_SHA256}  artifact/${GEODE_FILE}" | sha256sum -c -
+          test "$(jq -r '.version' artifact/UPDATE-MANIFEST.json)" = "${EXPECTED_VERSION}"
+          test "$(jq -r '.commit' artifact/UPDATE-MANIFEST.json)" = "${EXPECTED_COMMIT}"
+          test "$(jq -r '.sha256' artifact/UPDATE-MANIFEST.json)" = "${EXPECTED_SHA256}"
+          test "$(jq -r '.gd' artifact/UPDATE-MANIFEST.json)" = "2.2081"
+          test "$(jq -r '.geode' artifact/UPDATE-MANIFEST.json)" = "5.10.1"
+          echo "EXACT_CI_ARTIFACT=PASS"
+
+      - name: Publish immutable GitHub release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.1.1 --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            mkdir release-check
+            gh release download v0.1.1               --repo "${GITHUB_REPOSITORY}"               --pattern "${GEODE_FILE}"               --dir release-check
+            test -s "release-check/${GEODE_FILE}"
+            echo "${EXPECTED_SHA256}  release-check/${GEODE_FILE}" | sha256sum -c -
+            echo "EXISTING_RELEASE_ASSET_HASH=PASS"
+          else
+            gh release create v0.1.1               "artifact/${GEODE_FILE}"               --repo "${GITHUB_REPOSITORY}"               --target "${EXPECTED_COMMIT}"               --title "AutoBot T7 v0.1.1"               --notes "Exact .geode artifact from GitHub Actions run ${EXPECTED_RUN_ID}, artifact ${EXPECTED_ARTIFACT_ID}, commit ${EXPECTED_COMMIT}."
+          fi
+
+          curl -fL --retry 5 --retry-delay 2 "${DOWNLOAD_URL}" -o public.geode
+          echo "${EXPECTED_SHA256}  public.geode" | sha256sum -c -
+          echo "PUBLIC_RELEASE_HASH=PASS"
+
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+        with:
+          version: v3.7.4
+
+      - name: Authenticate to Geode Index
+        shell: bash
+        run: |
+          set -euo pipefail
+          geode index login --github-token "${GH_TOKEN}"
+          echo "GEODE_INDEX_LOGIN=PASS"
+
+      - name: Create mod on Geode Index
+        shell: bash
+        run: |
+          set -euo pipefail
+          geode index mods create "${DOWNLOAD_URL}"
+          echo "GEODE_INDEX_CREATE=PASS"
+
+      - name: Inspect Index state
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo "=== PUBLISHED ==="
+          geode index mods published
+          echo "=== PENDING ==="
+          geode index mods pending
+          echo "=== PUBLIC ENDPOINT ==="
+          curl -fsSL "https://api.geode-sdk.org/v1/mods/${MOD_ID}/versions?page=1&per_page=20" | tee index-response.json
+          echo
