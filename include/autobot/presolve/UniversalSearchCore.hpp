@@ -1,10 +1,12 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <limits>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,16 +38,11 @@ struct UniversalFingerprintHash {
     }
 };
 
-// A hash is only an index into a bucket. Equality is always exact over words.
-// completeRepresentation may only be true when the oracle can prove that the
-// words contain every gameplay-relevant variable that can affect the future.
 struct UniversalCanonicalState {
     UniversalFingerprint hash{};
     std::vector<std::uint64_t> words;
     bool completeRepresentation = false;
 
-    // Optional, independently-proven temporal abstraction. This is used only
-    // for dominance of states whose future is independent of absolute time.
     bool temporalDominanceEligible = false;
     UniversalFingerprint temporalHash{};
     std::vector<std::uint64_t> temporalWords;
@@ -66,7 +63,6 @@ struct UniversalObservation {
     bool dual = false;
     bool platformer = false;
     double progress = 0.0;
-    // Diagnostic only. Search identity is supplied by canonicalState(token).
     UniversalFingerprint fingerprint{};
 };
 
@@ -82,8 +78,6 @@ public:
     virtual bool restore(UniversalToken token) = 0;
     [[nodiscard]] virtual UniversalObservation step(UniversalAction action) = 0;
     virtual void discard(UniversalToken token) = 0;
-
-    // Must describe the captured token, not merely the currently loaded state.
     [[nodiscard]] virtual std::optional<UniversalCanonicalState> canonicalState(UniversalToken token) const = 0;
 };
 
@@ -99,13 +93,21 @@ enum class UniversalSearchStage {
 struct UniversalSearchStats {
     UniversalSearchStage stage = UniversalSearchStage::Idle;
     std::size_t totalExpansions = 0;
+    std::size_t totalEngineSteps = 0;
     std::size_t frontierSize = 0;
     std::size_t currentDepth = 0;
     std::size_t uniqueStates = 0;
     std::size_t replayCursor = 0;
     std::size_t exactDedupHits = 0;
     std::size_t temporalDominanceHits = 0;
+    std::size_t currentMacroTicks = 1;
+    std::size_t strategyTier = 0;
+    std::size_t stallRecoveries = 0;
+    std::size_t estimatedMemoryBytes = 0;
     double bestProgress = 0.0;
+    double elapsedSeconds = 0.0;
+    double expansionsPerSecond = 0.0;
+    double etaSeconds = -1.0;
 };
 
 class UniversalSearchCore final {
@@ -113,6 +115,10 @@ public:
     bool begin(IUniversalStateOracle& oracle);
     UniversalSearchStats work(IUniversalStateOracle& oracle, std::size_t expansionBudget);
     void reset(IUniversalStateOracle* oracle = nullptr);
+
+    // Changes only search ordering/granularity. Existing states are kept, so a
+    // stall recovery never throws away a potentially valid branch.
+    bool refineStrategy();
 
     [[nodiscard]] bool ready() const { return m_stage == UniversalSearchStage::Ready; }
     [[nodiscard]] bool searching() const {
@@ -128,6 +134,7 @@ private:
         std::size_t parent = std::numeric_limits<std::size_t>::max();
         UniversalAction action{};
         std::size_t depth = 0;
+        std::size_t repeatTicks = 1;
     };
 
     struct FrontierEntry {
@@ -142,9 +149,26 @@ private:
         std::size_t depth = 0;
     };
 
+    struct AdvanceResult {
+        UniversalObservation observation{};
+        std::size_t ticks = 0;
+    };
+
     [[nodiscard]] static std::vector<UniversalAction> actionsFor(bool dual, bool platformer);
+    [[nodiscard]] static std::vector<std::size_t> durationsFor(
+        std::size_t strategyTier,
+        bool dual,
+        bool platformer
+    );
+    [[nodiscard]] static AdvanceResult advanceAction(
+        IUniversalStateOracle& oracle,
+        UniversalAction action,
+        std::size_t ticks
+    );
+
     void reconstructPolicy(std::size_t metaIndex);
     void clearFrontierTokens(IUniversalStateOracle& oracle);
+    void prioritizeFrontier();
     bool beginReplay(IUniversalStateOracle& oracle, std::size_t terminalMetaIndex);
     UniversalSearchStats replayWork(IUniversalStateOracle& oracle, std::size_t budget);
     bool shouldPrune(UniversalCanonicalState const& canonical, std::size_t depth);
@@ -158,7 +182,6 @@ private:
     std::deque<FrontierEntry> m_nextFrontier;
     std::vector<NodeMeta> m_meta;
 
-    // Hash -> bucket -> exact equality. A hash match is never sufficient.
     std::unordered_map<UniversalFingerprint, std::vector<SeenState>, UniversalFingerprintHash> m_seenBuckets;
     std::unordered_map<UniversalFingerprint, std::vector<SeenState>, UniversalFingerprintHash> m_temporalBuckets;
 
@@ -166,11 +189,17 @@ private:
     std::vector<UniversalCanonicalState> m_replayStates;
     std::size_t m_replayCursor = 0;
     std::size_t m_totalExpansions = 0;
+    std::size_t m_totalEngineSteps = 0;
     std::size_t m_currentDepth = 0;
     std::size_t m_uniqueStates = 0;
     std::size_t m_exactDedupHits = 0;
     std::size_t m_temporalDominanceHits = 0;
+    std::size_t m_currentMacroTicks = 1;
+    std::size_t m_strategyTier = 0;
+    std::size_t m_stallRecoveries = 0;
     double m_bestProgress = 0.0;
+    double m_rootProgress = 0.0;
+    std::chrono::steady_clock::time_point m_startedAt{};
 };
 
 } // namespace autobot::presolve
