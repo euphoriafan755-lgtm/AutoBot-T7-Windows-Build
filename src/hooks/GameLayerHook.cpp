@@ -236,6 +236,11 @@ void logUniversalRuntimeValidation() {
         v.dynamicWorldChecks,
         v.dynamicTransitionsObserved
     );
+    log::info(
+        "REAL_INPUT_QUEUE_TEST={} checks={}",
+        v.inputQueuePass ? "PASS" : "FAIL",
+        v.inputQueueChecks
+    );
 }
 
 } // namespace
