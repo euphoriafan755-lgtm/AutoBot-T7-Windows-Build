@@ -449,7 +449,10 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
         if (entry.token != m_rootToken) oracle.discard(entry.token);
         if (m_stage != UniversalSearchStage::Searching) break;
 
-        if (m_totalExpansions % 32U == 0U) prioritizeFrontier();
+        // Best-first must be true at every decision boundary. Waiting for an
+        // exact expansion-count modulus can accidentally degrade into broad
+        // breadth-first exploration because one node may emit many candidates.
+        prioritizeFrontier();
     }
 
     if (m_stage == UniversalSearchStage::Replaying && expandedThisCall < expansionBudget) {
