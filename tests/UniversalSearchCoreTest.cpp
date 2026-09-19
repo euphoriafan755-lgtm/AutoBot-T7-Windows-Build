@@ -56,6 +56,22 @@ public:
 
     void discard(UniversalToken token) override { m_snapshots.erase(token); }
 
+    std::optional<UniversalCanonicalState> canonicalState(UniversalToken token) const override {
+        auto const it = m_snapshots.find(token);
+        if (it == m_snapshots.end()) return std::nullopt;
+        auto const& s = it->second;
+        UniversalCanonicalState out{};
+        out.hash = observation(s).fingerprint;
+        out.words = {
+            static_cast<std::uint64_t>(s.tick),
+            static_cast<std::uint64_t>(s.lane),
+            static_cast<std::uint64_t>(s.dual),
+            static_cast<std::uint64_t>(s.dead),
+        };
+        out.completeRepresentation = true;
+        return out;
+    }
+
 private:
     static UniversalObservation observation(State const& state) {
         UniversalObservation result{};

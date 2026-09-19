@@ -189,7 +189,40 @@ void verifyAuthoritativeFreezeRuntime(PlayLayer* layer) {
         );
     }
 }
+
+void logUniversalRuntimeValidation() {
+    const auto v = g_universalRuntime.validation();
+    log::info(
+        "RUNTIME_INTEGRATION_TEST_MODE=ACTIVE roundTripChecks={} recoveryCount={}",
+        v.roundTripChecks,
+        g_universalRuntime.recoveryCount()
+    );
+    log::info(
+        "CHECKPOINT_ROUNDTRIP_TEST={} checks={}",
+        (v.roundTripChecks > 0 && v.roundTripPass) ? "PASS" : "FAIL",
+        v.roundTripChecks
+    );
+    log::info(
+        "RNG_RESTORE_TEST={} checks={} transitionsObserved={}",
+        !v.rngPass ? "FAIL" : (v.rngTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
+        v.rngChecks,
+        v.rngTransitionsObserved
+    );
+    log::info(
+        "EFFECT_STATE_RESTORE_TEST={} checks={} transitionsObserved={}",
+        !v.effectStatePass ? "FAIL" : (v.effectTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
+        v.effectStateChecks,
+        v.effectTransitionsObserved
+    );
+    log::info(
+        "DYNAMIC_WORLD_RESTORE_TEST={} checks={} transitionsObserved={}",
+        !v.dynamicWorldPass ? "FAIL" : (v.dynamicTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
+        v.dynamicWorldChecks,
+        v.dynamicTransitionsObserved
+    );
 }
+
+} // namespace
 
 class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
     void update(float dt) {
@@ -242,13 +275,23 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                         g_universalRuntime.stepDt(),
                         g_universalRuntime.refinement()
                     );
+                    logUniversalRuntimeValidation();
                 }
                 return;
             }
 
             if (g_universalRuntime.ready() || g_universalRuntime.playing()) {
                 releaseAuthoritativeFreeze(owner);
+                const auto recoveriesBefore = g_universalRuntime.recoveryCount();
                 g_universalRuntime.playbackFrame(static_cast<double>(dt));
+                if (g_universalRuntime.searching() && g_universalRuntime.recoveryCount() > recoveriesBefore) {
+                    activateAuthoritativeFreeze(owner);
+                    log::warn(
+                        "UNIVERSAL_DESYNC_RECOVERY=REPLAN recoveryCount={} reason={}",
+                        g_universalRuntime.recoveryCount(),
+                        g_universalRuntime.reason()
+                    );
+                }
                 if (g_universalRuntime.error()) {
                     activateAuthoritativeFreeze(owner);
                     if (g_universalHUD) {

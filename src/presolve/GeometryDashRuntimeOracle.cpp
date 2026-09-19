@@ -8,7 +8,6 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -30,12 +29,32 @@ void mix(std::uint64_t& h, std::uint64_t v) {
     }
 }
 
-void mixFloat(std::uint64_t& h, float value) {
-    mix(h, std::bit_cast<std::uint32_t>(value));
+std::uint64_t bits(float value) { return std::bit_cast<std::uint32_t>(value); }
+std::uint64_t bits(double value) { return std::bit_cast<std::uint64_t>(value); }
+
+UniversalFingerprint hashWords(std::vector<std::uint64_t> const& words) {
+    std::uint64_t lo = kFnvOffset1;
+    std::uint64_t hi = kFnvOffset2;
+    for (std::size_t i = 0; i < words.size(); ++i) {
+        mix(lo, words[i]);
+        mix(hi, words[words.size() - 1U - i] ^ static_cast<std::uint64_t>(i));
+    }
+    return {lo, hi};
 }
 
-void mixDouble(std::uint64_t& h, double value) {
-    mix(h, std::bit_cast<std::uint64_t>(value));
+void appendAction(std::vector<std::uint64_t>& out, UniversalAction const& a) {
+    std::uint64_t v = 0;
+    v |= static_cast<std::uint64_t>(a.p1Hold) << 0U;
+    v |= static_cast<std::uint64_t>(a.p1Left) << 1U;
+    v |= static_cast<std::uint64_t>(a.p1Right) << 2U;
+    v |= static_cast<std::uint64_t>(a.p2Hold) << 3U;
+    v |= static_cast<std::uint64_t>(a.p2Left) << 4U;
+    v |= static_cast<std::uint64_t>(a.p2Right) << 5U;
+    out.push_back(v);
+}
+
+bool actionIdle(UniversalAction const& a) {
+    return !a.p1Hold && !a.p1Left && !a.p1Right && !a.p2Hold && !a.p2Left && !a.p2Right;
 }
 
 bool shouldTrack(GameObject* object) {
@@ -68,6 +87,17 @@ struct ObjectState {
     int enabledGroupsCounter = 0;
     bool activatedP1 = false;
     bool activatedP2 = false;
+
+    friend bool operator==(ObjectState const& a, ObjectState const& b) {
+        return a.object == b.object
+            && a.positionX == b.positionX && a.positionY == b.positionY
+            && a.offsetX == b.offsetX && a.offsetY == b.offsetY
+            && a.lastPosition.x == b.lastPosition.x && a.lastPosition.y == b.lastPosition.y
+            && a.rotation == b.rotation && a.scaleX == b.scaleX && a.scaleY == b.scaleY
+            && a.groupDisabled == b.groupDisabled && a.disabled == b.disabled
+            && a.disabled2 == b.disabled2 && a.enabledGroupsCounter == b.enabledGroupsCounter
+            && a.activatedP1 == b.activatedP1 && a.activatedP2 == b.activatedP2;
+    }
 };
 
 ObjectState captureObject(GameObject* object) {
@@ -118,36 +148,63 @@ void restoreObject(PlayLayer* layer, ObjectState const& state) {
     layer->updateObjectSection(object);
 }
 
-void mixPlayer(std::uint64_t& lo, std::uint64_t& hi, PlayerObject* player) {
+void appendPlayer(std::vector<std::uint64_t>& out, PlayerObject* player) {
     if (!player) {
-        mix(lo, 0xdeadbeefULL);
-        mix(hi, 0xbad0ULL);
+        out.push_back(0x504c415945524e55ULL); // PLAYERNU
         return;
     }
     const auto p = player->getRealPosition();
-    mixFloat(lo, p.x); mixFloat(hi, p.y);
-    mixDouble(lo, player->getYVelocity());
-    mixDouble(hi, player->getCurrentXVelocity());
-    mixFloat(lo, player->m_gravityMod);
-    mixFloat(hi, player->m_vehicleSize);
-    mix(lo, static_cast<std::uint64_t>(player->m_isDead));
-    mix(lo, static_cast<std::uint64_t>(player->m_isOnGround) << 1U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isUpsideDown) << 2U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isShip) << 3U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isBall) << 4U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isBird) << 5U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isDart) << 6U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isRobot) << 7U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isSpider) << 8U);
-    mix(lo, static_cast<std::uint64_t>(player->m_isSwing) << 9U);
-    mix(hi, static_cast<std::uint64_t>(player->m_jumpBuffered));
-    mix(hi, static_cast<std::uint64_t>(player->m_isDashing) << 1U);
-    mix(hi, static_cast<std::uint64_t>(player->m_isGoingLeft) << 2U);
+    out.push_back(bits(p.x)); out.push_back(bits(p.y));
+    out.push_back(bits(player->getYVelocity()));
+    out.push_back(bits(player->getCurrentXVelocity()));
+    out.push_back(bits(player->m_gravityMod));
+    out.push_back(bits(player->m_vehicleSize));
+    out.push_back(bits(player->m_playerSpeed));
+    out.push_back(bits(player->m_platformerVelocityRelated));
+    out.push_back(bits(static_cast<double>(player->m_dashX)));
+    out.push_back(bits(static_cast<double>(player->m_dashY)));
+    out.push_back(bits(static_cast<double>(player->m_dashAngle)));
+    out.push_back(bits(static_cast<double>(player->m_dashStartTime)));
+    std::uint64_t flags = 0;
+    flags |= static_cast<std::uint64_t>(player->m_isDead) << 0U;
+    flags |= static_cast<std::uint64_t>(player->m_isOnGround) << 1U;
+    flags |= static_cast<std::uint64_t>(player->m_isUpsideDown) << 2U;
+    flags |= static_cast<std::uint64_t>(player->m_isShip) << 3U;
+    flags |= static_cast<std::uint64_t>(player->m_isBall) << 4U;
+    flags |= static_cast<std::uint64_t>(player->m_isBird) << 5U;
+    flags |= static_cast<std::uint64_t>(player->m_isDart) << 6U;
+    flags |= static_cast<std::uint64_t>(player->m_isRobot) << 7U;
+    flags |= static_cast<std::uint64_t>(player->m_isSpider) << 8U;
+    flags |= static_cast<std::uint64_t>(player->m_isSwing) << 9U;
+    flags |= static_cast<std::uint64_t>(player->m_jumpBuffered) << 10U;
+    flags |= static_cast<std::uint64_t>(player->m_isDashing) << 11U;
+    flags |= static_cast<std::uint64_t>(player->m_isGoingLeft) << 12U;
+    flags |= static_cast<std::uint64_t>(player->m_isPlatformer) << 13U;
+    out.push_back(flags);
+    out.push_back(static_cast<std::uint64_t>(player->m_touchedRings.size()));
+    out.push_back(static_cast<std::uint64_t>(player->m_jumpPadRelated.size()));
+    out.push_back(static_cast<std::uint64_t>(player->m_holdingButtons.size()));
+}
+
+bool playerQuiescent(PlayerObject* p) {
+    if (!p) return true;
+    return p->m_isOnGround
+        && !p->m_isDashing
+        && std::abs(p->getYVelocity()) < 1e-12
+        && std::abs(p->getCurrentXVelocity()) < 1e-12;
 }
 
 } // namespace
 
 struct GeometryDashRuntimeOracle::Impl {
+    struct CanonicalSections {
+        std::vector<std::uint64_t> core;
+        std::vector<std::uint64_t> rng;
+        std::vector<std::uint64_t> effect;
+        std::vector<std::uint64_t> dynamic;
+        std::vector<std::uint64_t> temporal;
+    };
+
     struct Snapshot {
         Ref<CheckpointObject> checkpoint;
         std::uint64_t randomSeed = 0;
@@ -156,8 +213,12 @@ struct GeometryDashRuntimeOracle::Impl {
         bool practiceMode = false;
         float extraDelta = 0.0f;
         float timeWarp = 1.0f;
+        double levelTime = 0.0;
+        float currentProgress = 0.0f;
         UniversalAction action{};
         std::vector<ObjectState> objectStates;
+        CanonicalSections sections;
+        UniversalCanonicalState canonical;
     };
 
     PlayLayer* layer = nullptr;
@@ -168,10 +229,15 @@ struct GeometryDashRuntimeOracle::Impl {
     std::unordered_map<UniversalToken, std::shared_ptr<Snapshot>> snapshots;
     std::vector<GameObject*> trackedObjects;
     UniversalAction action{};
+    RuntimeOracleValidation validation{};
+    bool hasTimedOrTriggeredWorld = false;
+    std::optional<CanonicalSections> lastCapturedSections;
 
     explicit Impl(PlayLayer* value, double step) : layer(value), dt(step) {
         if (!layer || !layer->m_objects) return;
         for (auto* object : CCArrayExt<GameObject*>(layer->m_objects)) {
+            if (!object) continue;
+            if (object->m_isTrigger || object->m_groupCount > 0) hasTimedOrTriggeredWorld = true;
             if (shouldTrack(object)) trackedObjects.push_back(object);
         }
     }
@@ -193,44 +259,122 @@ struct GeometryDashRuntimeOracle::Impl {
         }
     }
 
-    UniversalFingerprint fingerprint() const {
-        std::uint64_t lo = kFnvOffset1;
-        std::uint64_t hi = kFnvOffset2;
-        if (!layer) return {lo, hi};
-        mixDouble(lo, layer->m_gameState.m_levelTime);
-        mixDouble(hi, static_cast<double>(layer->m_gameState.m_currentProgress));
-        mixFloat(lo, layer->m_gameState.m_timeWarp);
-        mix(hi, GameToolbox::getfast_srand());
-        mix(lo, static_cast<std::uint64_t>(layer->m_gameState.m_isDualMode));
-        mix(lo, static_cast<std::uint64_t>(layer->m_isPlatformer) << 1U);
-        mixPlayer(lo, hi, layer->m_player1);
-        if (layer->m_player2) mixPlayer(hi, lo, layer->m_player2);
-        mix(lo, static_cast<std::uint64_t>(action.p1Hold));
-        mix(lo, static_cast<std::uint64_t>(action.p1Left) << 1U);
-        mix(lo, static_cast<std::uint64_t>(action.p1Right) << 2U);
-        mix(hi, static_cast<std::uint64_t>(action.p2Hold));
-        mix(hi, static_cast<std::uint64_t>(action.p2Left) << 1U);
-        mix(hi, static_cast<std::uint64_t>(action.p2Right) << 2U);
+    CanonicalSections buildSections() const {
+        CanonicalSections s{};
+        if (!layer) return s;
+
+        // Absolute levelTime is intentionally excluded from search identity.
+        // Time-dependent future state must instead be represented by concrete
+        // pending/effect state; until that projection is proven complete the
+        // search marks this representation incomplete and does not transposition-dedup it.
+        s.core.push_back(bits(static_cast<double>(layer->m_gameState.m_currentProgress)));
+        s.core.push_back(bits(layer->m_gameState.m_timeWarp));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_currentChannel));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_rotateChannel));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_isDualMode));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_isPlatformer));
+        s.core.push_back(bits(layer->m_gameState.m_portalY));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_levelFlipping));
+        s.core.push_back(static_cast<std::uint64_t>(layer->m_queuedButtons.size()));
+        appendPlayer(s.core, layer->m_player1);
+        appendPlayer(s.core, layer->m_player2);
+        appendAction(s.core, action);
+
+        s.rng.push_back(GameToolbox::getfast_srand());
+        s.rng.push_back(layer->m_replayRandSeed);
+
+        s.effect.push_back(static_cast<std::uint64_t>(trackedObjects.size()));
+        s.dynamic.push_back(static_cast<std::uint64_t>(trackedObjects.size()));
         for (auto* object : trackedObjects) {
             if (!object) continue;
-            mix(lo, static_cast<std::uint64_t>(object->m_uniqueID));
-            mixFloat(lo, object->m_positionX);
-            mixFloat(hi, object->m_positionY);
-            mixFloat(lo, object->m_positionXOffset);
-            mixFloat(hi, object->m_positionYOffset);
-            mixFloat(lo, object->getRotation());
-            mixFloat(hi, object->getScaleX());
-            mixFloat(hi, object->getScaleY());
-            mix(lo, static_cast<std::uint64_t>(object->m_isGroupDisabled));
-            mix(lo, static_cast<std::uint64_t>(object->m_isDisabled) << 1U);
-            mix(lo, static_cast<std::uint64_t>(object->m_isDisabled2) << 2U);
-            mix(hi, static_cast<std::uint64_t>(static_cast<std::uint32_t>(object->m_enabledGroupsCounter)));
+            const auto state = captureObject(object);
+            s.dynamic.push_back(static_cast<std::uint64_t>(object->m_uniqueID));
+            s.dynamic.push_back(static_cast<std::uint64_t>(static_cast<std::uint32_t>(object->m_objectID)));
+            s.dynamic.push_back(bits(state.positionX)); s.dynamic.push_back(bits(state.positionY));
+            s.dynamic.push_back(bits(state.offsetX)); s.dynamic.push_back(bits(state.offsetY));
+            s.dynamic.push_back(bits(state.lastPosition.x)); s.dynamic.push_back(bits(state.lastPosition.y));
+            s.dynamic.push_back(bits(state.rotation)); s.dynamic.push_back(bits(state.scaleX)); s.dynamic.push_back(bits(state.scaleY));
+            std::uint64_t flags = 0;
+            flags |= static_cast<std::uint64_t>(state.groupDisabled) << 0U;
+            flags |= static_cast<std::uint64_t>(state.disabled) << 1U;
+            flags |= static_cast<std::uint64_t>(state.disabled2) << 2U;
+            flags |= static_cast<std::uint64_t>(state.activatedP1) << 3U;
+            flags |= static_cast<std::uint64_t>(state.activatedP2) << 4U;
+            s.dynamic.push_back(flags);
+            s.dynamic.push_back(static_cast<std::uint64_t>(static_cast<std::uint32_t>(state.enabledGroupsCounter)));
             if (auto* effect = typeinfo_cast<EffectGameObject*>(object)) {
-                mix(hi, static_cast<std::uint64_t>(effect->m_activatedByPlayer1));
-                mix(hi, static_cast<std::uint64_t>(effect->m_activatedByPlayer2) << 1U);
+                s.effect.push_back(static_cast<std::uint64_t>(object->m_uniqueID));
+                s.effect.push_back(static_cast<std::uint64_t>(effect->m_activatedByPlayer1));
+                s.effect.push_back(static_cast<std::uint64_t>(effect->m_activatedByPlayer2));
+                s.effect.push_back(static_cast<std::uint64_t>(object->m_isDisabled));
+                s.effect.push_back(static_cast<std::uint64_t>(object->m_isGroupDisabled));
             }
         }
-        return {lo, hi};
+
+        // Temporal dominance is intentionally much stricter than canonical
+        // equality. It is available only for a provably quiescent static
+        // platformer state with no trigger/group scheduler in the level.
+        s.temporal = s.core;
+        s.temporal.insert(s.temporal.end(), s.rng.begin(), s.rng.end());
+        s.temporal.insert(s.temporal.end(), s.dynamic.begin(), s.dynamic.end());
+        return s;
+    }
+
+    UniversalCanonicalState makeCanonical(CanonicalSections const& s) const {
+        UniversalCanonicalState c{};
+        c.words.reserve(s.core.size() + s.rng.size() + s.effect.size() + s.dynamic.size() + 4U);
+        c.words.push_back(0x434f5245ULL); c.words.insert(c.words.end(), s.core.begin(), s.core.end());
+        c.words.push_back(0x524e47ULL); c.words.insert(c.words.end(), s.rng.begin(), s.rng.end());
+        c.words.push_back(0x454646454354ULL); c.words.insert(c.words.end(), s.effect.begin(), s.effect.end());
+        c.words.push_back(0x44594e414d4943ULL); c.words.insert(c.words.end(), s.dynamic.begin(), s.dynamic.end());
+        c.hash = hashWords(c.words);
+
+        // This projection is deliberately not claimed complete: GD 2.2081 has
+        // opaque/evolving internal trigger/effect state. Because this is false,
+        // UniversalSearchCore will never prune a distinct history merely from
+        // this projection.
+        c.completeRepresentation = false;
+
+        const bool quiescent = layer
+            && layer->m_isPlatformer
+            && !hasTimedOrTriggeredWorld
+            && layer->m_queuedButtons.empty()
+            && actionIdle(action)
+            && playerQuiescent(layer->m_player1)
+            && (!layer->m_gameState.m_isDualMode || playerQuiescent(layer->m_player2));
+        if (quiescent) {
+            c.temporalDominanceEligible = true;
+            c.temporalWords = s.temporal;
+            c.temporalHash = hashWords(c.temporalWords);
+        }
+        return c;
+    }
+
+    bool verifyRestore(Snapshot const& snap) {
+        const auto restored = buildSections();
+        ++validation.roundTripChecks;
+        ++validation.effectStateChecks;
+        ++validation.rngChecks;
+        ++validation.dynamicWorldChecks;
+
+        const bool coreOk = restored.core == snap.sections.core
+            && std::abs(layer->m_gameState.m_levelTime - snap.levelTime) <= 1e-12
+            && layer->m_gameState.m_currentProgress == snap.currentProgress;
+        const bool rngOk = restored.rng == snap.sections.rng;
+        const bool effectOk = restored.effect == snap.sections.effect;
+        const bool dynamicOk = restored.dynamic == snap.sections.dynamic;
+        validation.rngPass = validation.rngPass && rngOk;
+        validation.effectStatePass = validation.effectStatePass && effectOk;
+        validation.dynamicWorldPass = validation.dynamicWorldPass && dynamicOk;
+        validation.roundTripPass = validation.roundTripPass && coreOk && rngOk && effectOk && dynamicOk;
+        if (!validation.roundTripPass) {
+            error = "CHECKPOINT ROUNDTRIP MISMATCH core=" + std::to_string(coreOk)
+                + " rng=" + std::to_string(rngOk)
+                + " effect=" + std::to_string(effectOk)
+                + " dynamic=" + std::to_string(dynamicOk);
+            return false;
+        }
+        return true;
     }
 };
 
@@ -239,16 +383,11 @@ GeometryDashRuntimeOracle::GeometryDashRuntimeOracle(PlayLayer* layer, double st
 
 GeometryDashRuntimeOracle::~GeometryDashRuntimeOracle() = default;
 
-void GeometryDashRuntimeOracle::setStepCallback(StepCallback callback) {
-    m_impl->callback = std::move(callback);
-}
-
-void GeometryDashRuntimeOracle::setStepDt(double value) {
-    if (std::isfinite(value) && value > 0.0) m_impl->dt = value;
-}
-
+void GeometryDashRuntimeOracle::setStepCallback(StepCallback callback) { m_impl->callback = std::move(callback); }
+void GeometryDashRuntimeOracle::setStepDt(double value) { if (std::isfinite(value) && value > 0.0) m_impl->dt = value; }
 double GeometryDashRuntimeOracle::stepDt() const { return m_impl->dt; }
 std::string const& GeometryDashRuntimeOracle::lastError() const { return m_impl->error; }
+RuntimeOracleValidation GeometryDashRuntimeOracle::validation() const { return m_impl->validation; }
 
 UniversalObservation GeometryDashRuntimeOracle::observe() const {
     UniversalObservation out{};
@@ -261,29 +400,49 @@ UniversalObservation GeometryDashRuntimeOracle::observe() const {
     out.dual = layer->m_gameState.m_isDualMode && layer->m_player2;
     out.platformer = layer->m_isPlatformer;
     out.progress = static_cast<double>(layer->getCurrentPercent());
-    out.fingerprint = m_impl->fingerprint();
+    out.fingerprint = m_impl->makeCanonical(m_impl->buildSections()).hash;
     return out;
 }
 
 std::optional<UniversalToken> GeometryDashRuntimeOracle::capture() {
     auto* layer = m_impl->layer;
     if (!layer) return std::nullopt;
+
+    const auto randomSeed = GameToolbox::getfast_srand();
+    const auto replaySeed = layer->m_replayRandSeed;
+    const auto sections = m_impl->buildSections();
+    if (m_impl->lastCapturedSections) {
+        if (m_impl->lastCapturedSections->effect != sections.effect) ++m_impl->validation.effectTransitionsObserved;
+        if (m_impl->lastCapturedSections->rng != sections.rng) ++m_impl->validation.rngTransitionsObserved;
+        if (m_impl->lastCapturedSections->dynamic != sections.dynamic) ++m_impl->validation.dynamicTransitionsObserved;
+    }
+    m_impl->lastCapturedSections = sections;
     auto* checkpoint = layer->createCheckpoint();
+    // Snapshot creation must be observational. If GD touches RNG while making
+    // a checkpoint, restore it immediately so search capture has no side effect.
+    GameToolbox::fast_srand(randomSeed);
+    layer->m_replayRandSeed = replaySeed;
     if (!checkpoint) {
         m_impl->error = "createCheckpoint returned null";
         return std::nullopt;
     }
+
     auto snap = std::make_shared<Impl::Snapshot>();
     snap->checkpoint = checkpoint;
-    snap->randomSeed = GameToolbox::getfast_srand();
-    snap->replaySeed = layer->m_replayRandSeed;
+    snap->randomSeed = randomSeed;
+    snap->replaySeed = replaySeed;
     snap->attempts = layer->m_attempts;
     snap->practiceMode = layer->m_isPracticeMode;
     snap->extraDelta = layer->m_extraDelta;
     snap->timeWarp = layer->m_gameState.m_timeWarp;
+    snap->levelTime = layer->m_gameState.m_levelTime;
+    snap->currentProgress = layer->m_gameState.m_currentProgress;
     snap->action = m_impl->action;
+    snap->sections = sections;
+    snap->canonical = m_impl->makeCanonical(sections);
     snap->objectStates.reserve(m_impl->trackedObjects.size());
     for (auto* object : m_impl->trackedObjects) snap->objectStates.push_back(captureObject(object));
+
     const auto token = ++m_impl->nextToken;
     m_impl->snapshots.emplace(token, std::move(snap));
     return token;
@@ -303,7 +462,6 @@ bool GeometryDashRuntimeOracle::restore(UniversalToken token) {
         layer->m_checkpointArray->addObject(snap.checkpoint.data());
     }
     layer->m_currentCheckpoint = snap.checkpoint.data();
-    const bool oldPractice = layer->m_isPracticeMode;
     layer->m_isPracticeMode = true;
     GameToolbox::fast_srand(snap.randomSeed);
     layer->m_replayRandSeed = snap.replaySeed;
@@ -319,8 +477,9 @@ bool GeometryDashRuntimeOracle::restore(UniversalToken token) {
     layer->m_queuedButtons.clear();
     layer->m_isPaused = true;
     m_impl->action = snap.action;
-    (void)oldPractice;
-    return true;
+    GameToolbox::fast_srand(snap.randomSeed);
+    layer->m_replayRandSeed = snap.replaySeed;
+    return m_impl->verifyRestore(snap);
 }
 
 UniversalObservation GeometryDashRuntimeOracle::step(UniversalAction action) {
@@ -336,8 +495,12 @@ UniversalObservation GeometryDashRuntimeOracle::step(UniversalAction action) {
     return observe();
 }
 
-void GeometryDashRuntimeOracle::discard(UniversalToken token) {
-    m_impl->snapshots.erase(token);
+void GeometryDashRuntimeOracle::discard(UniversalToken token) { m_impl->snapshots.erase(token); }
+
+std::optional<UniversalCanonicalState> GeometryDashRuntimeOracle::canonicalState(UniversalToken token) const {
+    auto it = m_impl->snapshots.find(token);
+    if (it == m_impl->snapshots.end() || !it->second) return std::nullopt;
+    return it->second->canonical;
 }
 
 } // namespace autobot::presolve

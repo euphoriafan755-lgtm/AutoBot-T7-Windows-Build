@@ -46,9 +46,13 @@ public:
     [[nodiscard]] std::size_t playbackCursor() const { return m_playbackCursor; }
     [[nodiscard]] double stepDt() const;
     [[nodiscard]] std::size_t refinement() const { return m_refinement; }
+    [[nodiscard]] std::size_t recoveryCount() const { return m_recoveryCount; }
+    [[nodiscard]] RuntimeOracleValidation validation() const;
 
 private:
     bool restartAtFinerResolution();
+    bool beginRecoveryFromToken(UniversalToken token, std::string reason);
+    bool canonicalMatchesExpected(std::size_t index, UniversalToken token) const;
     void enterError(std::string reason);
     void startPlayback();
 
@@ -57,9 +61,12 @@ private:
     std::unique_ptr<GeometryDashRuntimeOracle> m_oracle;
     UniversalSearchCore m_search;
     UniversalToken m_visibleRoot = kInvalidUniversalToken;
+    UniversalToken m_lastSafePlayback = kInvalidUniversalToken;
     std::vector<UniversalAction> m_policy;
+    std::vector<UniversalCanonicalState> m_expectedStates;
     std::size_t m_playbackCursor = 0;
     std::size_t m_refinement = 0;
+    std::size_t m_recoveryCount = 0;
     double m_accumulator = 0.0;
     std::string m_reason = "IDLE";
 };

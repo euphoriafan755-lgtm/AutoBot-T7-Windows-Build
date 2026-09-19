@@ -37,15 +37,19 @@ bool UniversalRuntimeSession::begin(PlayLayer* layer) {
 void UniversalRuntimeSession::reset() {
     if (m_oracle) {
         m_search.reset(m_oracle.get());
+        if (m_lastSafePlayback != kInvalidUniversalToken) m_oracle->discard(m_lastSafePlayback);
         if (m_visibleRoot != kInvalidUniversalToken) m_oracle->discard(m_visibleRoot);
     }
     m_owner = nullptr;
     m_oracle.reset();
     m_search = {};
     m_visibleRoot = kInvalidUniversalToken;
+    m_lastSafePlayback = kInvalidUniversalToken;
     m_policy.clear();
+    m_expectedStates.clear();
     m_playbackCursor = 0;
     m_refinement = 0;
+    m_recoveryCount = 0;
     m_accumulator = 0.0;
     m_stage = UniversalRuntimeStage::Idle;
     m_reason = "IDLE";
@@ -73,6 +77,36 @@ bool UniversalRuntimeSession::restartAtFinerResolution() {
     return true;
 }
 
+bool UniversalRuntimeSession::beginRecoveryFromToken(UniversalToken token, std::string reason) {
+    if (!m_oracle || token == kInvalidUniversalToken) return false;
+    if (!m_oracle->restore(token)) return false;
+
+    m_search.reset(m_oracle.get());
+    if (m_visibleRoot != kInvalidUniversalToken && m_visibleRoot != token) m_oracle->discard(m_visibleRoot);
+    if (m_lastSafePlayback != kInvalidUniversalToken && m_lastSafePlayback != token) m_oracle->discard(m_lastSafePlayback);
+    m_lastSafePlayback = kInvalidUniversalToken;
+    m_visibleRoot = token;
+    m_policy.clear();
+    m_expectedStates.clear();
+    m_playbackCursor = 0;
+    m_accumulator = 0.0;
+    ++m_recoveryCount;
+
+    if (!m_search.begin(*m_oracle)) return false;
+    m_stage = UniversalRuntimeStage::Searching;
+    m_reason = "DESYNC RECOVERY REPLAN #" + std::to_string(m_recoveryCount) + ": " + reason;
+    if (m_owner) m_owner->m_isPaused = true;
+    return true;
+}
+
+bool UniversalRuntimeSession::canonicalMatchesExpected(std::size_t index, UniversalToken token) const {
+    if (!m_oracle || index >= m_expectedStates.size()) return false;
+    auto current = m_oracle->canonicalState(token);
+    if (!current) return false;
+    // Runtime mismatch detection uses exact semantic words, never hash equality.
+    return current->words == m_expectedStates[index].words;
+}
+
 void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
     if (!m_oracle || m_stage != UniversalRuntimeStage::Searching) return;
     auto stats = m_search.work(*m_oracle, std::max<std::size_t>(1, expansionBudget));
@@ -84,8 +118,15 @@ void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
 
     if (m_search.ready()) {
         m_policy = m_search.policy();
+        m_expectedStates = m_search.replayStates();
+        if (m_expectedStates.size() != m_policy.size()) {
+            enterError("VERIFIED REPLAY STATE COUNT MISMATCH");
+            return;
+        }
         m_stage = UniversalRuntimeStage::Ready;
-        m_reason = "TRUE ENGINE POLICY REPLAY VERIFIED";
+        m_reason = m_recoveryCount == 0
+            ? "TRUE ENGINE POLICY REPLAY VERIFIED"
+            : "RECOVERY POLICY REPLAY VERIFIED";
         return;
     }
     if (stats.stage == UniversalSearchStage::Exhausted) {
@@ -106,10 +147,16 @@ void UniversalRuntimeSession::startPlayback() {
         return;
     }
     m_search.reset(m_oracle.get());
+    if (m_lastSafePlayback != kInvalidUniversalToken) {
+        m_oracle->discard(m_lastSafePlayback);
+        m_lastSafePlayback = kInvalidUniversalToken;
+    }
     m_playbackCursor = 0;
     m_accumulator = 0.0;
     m_stage = UniversalRuntimeStage::Playing;
-    m_reason = "AUTOPLAY ENGINE-VERIFIED POLICY";
+    m_reason = m_recoveryCount == 0
+        ? "AUTOPLAY ENGINE-VERIFIED POLICY"
+        : "AUTOPLAY RECOVERED ENGINE-VERIFIED POLICY";
     if (m_owner) m_owner->m_isPaused = false;
 }
 
@@ -131,10 +178,21 @@ void UniversalRuntimeSession::playbackFrame(double realDt) {
             }
             break;
         }
+
+        if (m_lastSafePlayback != kInvalidUniversalToken) m_oracle->discard(m_lastSafePlayback);
+        auto safe = m_oracle->capture();
+        if (!safe) {
+            enterError("PLAYBACK SAFE SNAPSHOT FAILED: " + m_oracle->lastError());
+            break;
+        }
+        m_lastSafePlayback = *safe;
+
+        const auto expectedIndex = m_playbackCursor;
         const auto observation = m_oracle->step(m_policy[m_playbackCursor++]);
         m_accumulator -= step;
-        if (!observation.valid || observation.dead) {
-            enterError("RUNTIME POLICY DIVERGED OR DIED");
+
+        if (!observation.valid) {
+            enterError("RUNTIME OBSERVATION INVALID");
             break;
         }
         if (observation.complete) {
@@ -143,11 +201,35 @@ void UniversalRuntimeSession::playbackFrame(double realDt) {
             if (m_owner) m_owner->m_isPaused = false;
             break;
         }
+
+        if (observation.dead) {
+            // Recover from the immediately preceding alive real state, not 0%.
+            const auto recoveryToken = m_lastSafePlayback;
+            m_lastSafePlayback = kInvalidUniversalToken;
+            if (!beginRecoveryFromToken(recoveryToken, "PLAYBACK DIED BEFORE EXPECTED STATE")) {
+                enterError("DESYNC RECOVERY FAILED AFTER DEATH: " + m_oracle->lastError());
+            }
+            break;
+        }
+
+        auto current = m_oracle->capture();
+        if (!current) {
+            enterError("PLAYBACK CANONICAL SNAPSHOT FAILED: " + m_oracle->lastError());
+            break;
+        }
+        if (!canonicalMatchesExpected(expectedIndex, *current)) {
+            const auto recoveryToken = *current;
+            if (!beginRecoveryFromToken(recoveryToken, "EXPECTED CANONICAL STATE MISMATCH")) {
+                m_oracle->discard(recoveryToken);
+                enterError("DESYNC RECOVERY FAILED: " + m_oracle->lastError());
+            }
+            break;
+        }
+        m_oracle->discard(*current);
     }
 }
 
-double UniversalRuntimeSession::stepDt() const {
-    return m_oracle ? m_oracle->stepDt() : 0.0;
-}
+double UniversalRuntimeSession::stepDt() const { return m_oracle ? m_oracle->stepDt() : 0.0; }
+RuntimeOracleValidation UniversalRuntimeSession::validation() const { return m_oracle ? m_oracle->validation() : RuntimeOracleValidation{}; }
 
 } // namespace autobot::presolve

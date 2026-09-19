@@ -36,6 +36,29 @@ struct UniversalFingerprintHash {
     }
 };
 
+// A hash is only an index into a bucket. Equality is always exact over words.
+// completeRepresentation may only be true when the oracle can prove that the
+// words contain every gameplay-relevant variable that can affect the future.
+struct UniversalCanonicalState {
+    UniversalFingerprint hash{};
+    std::vector<std::uint64_t> words;
+    bool completeRepresentation = false;
+
+    // Optional, independently-proven temporal abstraction. This is used only
+    // for dominance of states whose future is independent of absolute time.
+    bool temporalDominanceEligible = false;
+    UniversalFingerprint temporalHash{};
+    std::vector<std::uint64_t> temporalWords;
+
+    [[nodiscard]] bool exactEquals(UniversalCanonicalState const& other) const {
+        return words == other.words;
+    }
+
+    [[nodiscard]] bool temporalEquals(UniversalCanonicalState const& other) const {
+        return temporalWords == other.temporalWords;
+    }
+};
+
 struct UniversalObservation {
     bool valid = false;
     bool dead = false;
@@ -43,6 +66,7 @@ struct UniversalObservation {
     bool dual = false;
     bool platformer = false;
     double progress = 0.0;
+    // Diagnostic only. Search identity is supplied by canonicalState(token).
     UniversalFingerprint fingerprint{};
 };
 
@@ -58,6 +82,9 @@ public:
     virtual bool restore(UniversalToken token) = 0;
     [[nodiscard]] virtual UniversalObservation step(UniversalAction action) = 0;
     virtual void discard(UniversalToken token) = 0;
+
+    // Must describe the captured token, not merely the currently loaded state.
+    [[nodiscard]] virtual std::optional<UniversalCanonicalState> canonicalState(UniversalToken token) const = 0;
 };
 
 enum class UniversalSearchStage {
@@ -76,6 +103,8 @@ struct UniversalSearchStats {
     std::size_t currentDepth = 0;
     std::size_t uniqueStates = 0;
     std::size_t replayCursor = 0;
+    std::size_t exactDedupHits = 0;
+    std::size_t temporalDominanceHits = 0;
     double bestProgress = 0.0;
 };
 
@@ -91,6 +120,7 @@ public:
     }
     [[nodiscard]] UniversalSearchStage stage() const { return m_stage; }
     [[nodiscard]] std::vector<UniversalAction> const& policy() const { return m_policy; }
+    [[nodiscard]] std::vector<UniversalCanonicalState> const& replayStates() const { return m_replayStates; }
     [[nodiscard]] UniversalSearchStats stats() const;
 
 private:
@@ -104,6 +134,12 @@ private:
         UniversalToken token = kInvalidUniversalToken;
         std::size_t metaIndex = 0;
         UniversalObservation observation{};
+        UniversalCanonicalState canonical{};
+    };
+
+    struct SeenState {
+        std::vector<std::uint64_t> words;
+        std::size_t depth = 0;
     };
 
     [[nodiscard]] static std::vector<UniversalAction> actionsFor(bool dual, bool platformer);
@@ -111,18 +147,29 @@ private:
     void clearFrontierTokens(IUniversalStateOracle& oracle);
     bool beginReplay(IUniversalStateOracle& oracle, std::size_t terminalMetaIndex);
     UniversalSearchStats replayWork(IUniversalStateOracle& oracle, std::size_t budget);
+    bool shouldPrune(UniversalCanonicalState const& canonical, std::size_t depth);
+    void remember(UniversalCanonicalState const& canonical, std::size_t depth);
 
     UniversalSearchStage m_stage = UniversalSearchStage::Idle;
     UniversalToken m_rootToken = kInvalidUniversalToken;
     UniversalObservation m_rootObservation{};
+    UniversalCanonicalState m_rootCanonical{};
     std::deque<FrontierEntry> m_frontier;
     std::deque<FrontierEntry> m_nextFrontier;
     std::vector<NodeMeta> m_meta;
-    std::unordered_map<UniversalFingerprint, std::size_t, UniversalFingerprintHash> m_seenDepth;
+
+    // Hash -> bucket -> exact equality. A hash match is never sufficient.
+    std::unordered_map<UniversalFingerprint, std::vector<SeenState>, UniversalFingerprintHash> m_seenBuckets;
+    std::unordered_map<UniversalFingerprint, std::vector<SeenState>, UniversalFingerprintHash> m_temporalBuckets;
+
     std::vector<UniversalAction> m_policy;
+    std::vector<UniversalCanonicalState> m_replayStates;
     std::size_t m_replayCursor = 0;
     std::size_t m_totalExpansions = 0;
     std::size_t m_currentDepth = 0;
+    std::size_t m_uniqueStates = 0;
+    std::size_t m_exactDedupHits = 0;
+    std::size_t m_temporalDominanceHits = 0;
     double m_bestProgress = 0.0;
 };
 
