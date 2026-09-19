@@ -1,7 +1,10 @@
 build/
 .geode/
+ci-artifacts/
+ci-logs/
 *.geode
 *.dll
 *.pdb
 *.exp
 *.lib
+*.log

@@ -1,3 +1,0 @@
-# Source-level checksum file intentionally deferred during Collision World audit.
-# The final CI artifact generates SHA256SUMS.txt from the exact successful
-# commit and package so source/binary provenance cannot drift.
