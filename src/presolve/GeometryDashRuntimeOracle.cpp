@@ -300,14 +300,14 @@ bool GeometryDashRuntimeOracle::restore(UniversalToken token) {
     layer->m_queuedButtons.clear();
     if (layer->m_checkpointArray) {
         layer->m_checkpointArray->removeAllObjects();
-        layer->m_checkpointArray->addObject(snap.checkpoint.get());
+        layer->m_checkpointArray->addObject(snap.checkpoint.data());
     }
-    layer->m_currentCheckpoint = snap.checkpoint.get();
+    layer->m_currentCheckpoint = snap.checkpoint.data();
     const bool oldPractice = layer->m_isPracticeMode;
     layer->m_isPracticeMode = true;
     GameToolbox::fast_srand(snap.randomSeed);
     layer->m_replayRandSeed = snap.replaySeed;
-    layer->loadFromCheckpoint(snap.checkpoint.get());
+    layer->loadFromCheckpoint(snap.checkpoint.data());
     layer->m_isPracticeMode = snap.practiceMode;
     layer->m_attempts = snap.attempts;
     layer->m_extraDelta = snap.extraDelta;
