@@ -87,11 +87,18 @@ UniversalSearchCore::AdvanceResult UniversalSearchCore::advanceAction(
 ) {
     AdvanceResult result{};
     result.observation = oracle.observe();
+    auto epoch = oracle.decisionEpoch();
 
     for (std::size_t i = 0; i < std::max<std::size_t>(1, ticks); ++i) {
         result.observation = oracle.step(action);
         ++result.ticks;
         if (!result.observation.valid || result.observation.dead || result.observation.complete) break;
+
+        const auto nextEpoch = oracle.decisionEpoch();
+        if (nextEpoch != epoch) {
+            break;
+        }
+        epoch = nextEpoch;
     }
     return result;
 }
