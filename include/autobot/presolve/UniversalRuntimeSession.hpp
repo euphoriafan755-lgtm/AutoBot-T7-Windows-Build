@@ -33,6 +33,10 @@ public:
     void playbackFrame(double realDt);
     void fail(std::string reason);
 
+    // A stall is recoverable. First change search granularity without dropping
+    // states; only then restart from the visible root at a finer engine step.
+    bool recoverFromStall(std::string reason);
+
     [[nodiscard]] PlayLayer* owner() const { return m_owner; }
     [[nodiscard]] UniversalRuntimeStage stage() const { return m_stage; }
     [[nodiscard]] bool searching() const { return m_stage == UniversalRuntimeStage::Searching; }
@@ -48,6 +52,7 @@ public:
     [[nodiscard]] double stepDt() const;
     [[nodiscard]] std::size_t refinement() const { return m_refinement; }
     [[nodiscard]] std::size_t recoveryCount() const { return m_recoveryCount; }
+    [[nodiscard]] std::size_t stallRecoveryCount() const { return m_stallRecoveryCount; }
     [[nodiscard]] RuntimeOracleValidation validation() const;
 
 private:
@@ -68,6 +73,7 @@ private:
     std::size_t m_playbackCursor = 0;
     std::size_t m_refinement = 0;
     std::size_t m_recoveryCount = 0;
+    std::size_t m_stallRecoveryCount = 0;
     double m_accumulator = 0.0;
     std::string m_reason = "IDLE";
 };
