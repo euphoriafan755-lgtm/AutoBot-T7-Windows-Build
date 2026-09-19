@@ -1,0 +1,102 @@
+name: Solver Closeout Validation
+
+on:
+  push:
+    branches:
+      - solver-closeout
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L https://github.com/ninja-build/ninja/releases/latest/download/ninja-win.zip -o ninja.zip
+          7z x ninja.zip -o"$GITHUB_WORKSPACE/ninja"
+          echo "$GITHUB_WORKSPACE/ninja" >> "$GITHUB_PATH"
+
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+        with:
+          version: v3.7.4
+
+      - name: Setup Geode SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CLI_PROFILE="${{ github.workspace }}/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods" "$CLI_PROFILE/Contents/geode/mods"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win
+          geode sdk install "${{ github.workspace }}/geode-sdk-clone"
+          export GEODE_SDK="${{ github.workspace }}/geode-sdk-clone"
+          echo "GEODE_SDK=$GEODE_SDK" >> "$GITHUB_ENV"
+          geode sdk update "5.10.1"
+          geode sdk install-binaries --platform win --version "5.10.1"
+
+      - name: Search and runtime regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-tests
+          CXX=(clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude)
+
+          "${CXX[@]}" tests/UniversalSearchCoreTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-search.exe
+          ./ci-tests/universal-search.exe
+
+          "${CXX[@]}" tests/UniversalMechanicsSuiteTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-suite.exe
+          ./ci-tests/universal-suite.exe
+
+          "${CXX[@]}" tests/SearchStateAliasTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/search-alias.exe
+          ./ci-tests/search-alias.exe
+
+          "${CXX[@]}" tests/InfiniteWaitDominanceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/infinite-wait.exe
+          ./ci-tests/infinite-wait.exe
+
+          "${CXX[@]}" tests/UniversalDesyncRecoveryTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/desync-recovery.exe
+          ./ci-tests/desync-recovery.exe
+
+          "${CXX[@]}" tests/UniversalSearchRuntimeLivenessTest.cpp src/presolve/UniversalSearchRuntimeLiveness.cpp -o ci-tests/liveness.exe
+          ./ci-tests/liveness.exe
+
+          "${CXX[@]}" tests/UniversalMacroSearchPerformanceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/macro-perf.exe
+          ./ci-tests/macro-perf.exe
+
+      - name: Existing solver gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXX=(clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude)
+          COMMON=(
+            src/presolve/PreRunSolver.cpp
+            src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp
+            src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp
+            src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp
+            src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp
+          )
+          "${CXX[@]}" tests/ModelTruthTest.cpp "${COMMON[@]}" -o ci-tests/model-truth.exe
+          ./ci-tests/model-truth.exe
+          "${CXX[@]}" tests/ActionCountdownTest.cpp "${COMMON[@]}" -o ci-tests/action-countdown.exe
+          ./ci-tests/action-countdown.exe
+
+      - name: Configure real Geode mod
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_C_COMPILER=clang             -DCMAKE_CXX_COMPILER=clang++             '-DGEODE_CODEGEN_CMAKE_ARGS=-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja'             -G Ninja             -DGEODE_DONT_INSTALL_MODS=ON             -DGEODE_TARGET_PLATFORM=Win64             '-DCMAKE_CXX_FLAGS=-Wall -Wextra'
+
+      - name: Compile and package internally
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --config Release --verbose --parallel 2
+          test -n "$(find build -type f -name 'thiago7tv.autobot-t7.dll' -print -quit)"
+          test -n "$(find build -type f -name '*.geode' -print -quit)"
+          echo "SOLVER_CLOSEOUT_INTERNAL_BUILD=PASS"
