@@ -265,7 +265,7 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                 // Keep the scheduler alive. Visible gameplay is frozen because this outer
                 // callback returns without calling GJBaseGameLayer::update(dt).
                 owner->m_isPaused = false;
-                g_universalRuntime.searchSlice(32);
+                g_universalRuntime.searchSlice(8);
 
                 const auto liveStats = g_universalRuntime.stats();
                 const auto liveness = g_universalSearchLiveness.observe(
@@ -273,17 +273,56 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                     captureSearchVisibleState(owner),
                     elapsedMs(g_universalSearchLivenessStarted) / 1000.0
                 );
+                if (liveness.state == autobot::presolve::SearchLivenessState::Stall) {
+                    const auto beforeTier = liveStats.strategyTier;
+                    const auto beforeRefinement = g_universalRuntime.refinement();
+                    if (!g_universalRuntime.recoverFromStall(liveness.reason)) {
+                        g_universalRuntime.fail(
+                            "E) SEARCH ES DEMASIADO LENTO: STALL RECOVERY EXHAUSTED: " + liveness.reason
+                        );
+                        log::error(
+                            "UNIVERSAL_SEARCH_STALL=FATAL reason={} expansions={} engineSteps={} depth={} "
+                            "frontier={} best={:.3f}% tier={} refinement={}",
+                            liveness.reason, liveStats.totalExpansions, liveStats.totalEngineSteps,
+                            liveStats.currentDepth, liveStats.frontierSize, liveStats.bestProgress,
+                            beforeTier, beforeRefinement
+                        );
+                        if (g_universalHUD) {
+                            g_universalHUD->updatePreRun(
+                                autobot::presolve::PreRunStage::NotReady,
+                                g_universalRuntime.reason(),
+                                false,
+                                liveStats.bestProgress
+                            );
+                        }
+                        return;
+                    }
+
+                    const auto after = g_universalRuntime.stats();
+                    log::warn(
+                        "UNIVERSAL_SEARCH_STALL=RECOVERED reason={} oldTier={} newTier={} oldRefinement={} "
+                        "newRefinement={} expansions={} engineSteps={} best={:.3f}%",
+                        liveness.reason, beforeTier, after.strategyTier, beforeRefinement,
+                        g_universalRuntime.refinement(), after.totalExpansions,
+                        after.totalEngineSteps, after.bestProgress
+                    );
+                    g_universalSearchLiveness.reset(after, captureSearchVisibleState(owner));
+                    g_universalSearchLivenessStarted = PerfClock::now();
+                    return;
+                }
+
                 if (liveness.state == autobot::presolve::SearchLivenessState::Fail) {
                     if (!g_universalSearchLivenessFailLogged) {
                         g_universalSearchLivenessFailLogged = true;
                         log::error(
-                            "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=FAIL reason={} expansions={} depth={} frontier={} "
-                            "unique={} stagnantFrames={} playerVisibleFrozen=YES attemptsDelta=0",
-                            liveness.reason, liveStats.totalExpansions, liveStats.currentDepth,
-                            liveStats.frontierSize, liveStats.uniqueStates, liveness.stagnantFrames
+                            "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=FAIL reason={} expansions={} engineSteps={} "
+                            "depth={} frontier={} unique={} stagnantFrames={}",
+                            liveness.reason, liveStats.totalExpansions, liveStats.totalEngineSteps,
+                            liveStats.currentDepth, liveStats.frontierSize,
+                            liveStats.uniqueStates, liveness.stagnantFrames
                         );
                     }
-                    g_universalRuntime.fail("SEARCH DRIVER STALLED: " + liveness.reason);
+                    g_universalRuntime.fail("A) SEARCH DRIVER NO CORRE: " + liveness.reason);
                     if (g_universalHUD) {
                         g_universalHUD->updatePreRun(
                             autobot::presolve::PreRunStage::NotReady,
@@ -311,9 +350,22 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                     g_universalHUD->updatePreRun(
                         autobot::presolve::PreRunStage::Searching,
                         fmt::format(
-                            "ENGINE ORACLE SEARCH depth={} frontier={} unique={} expansions={} best={:.2f}% dt={:.7f}",
-                            stats.currentDepth, stats.frontierSize, stats.uniqueStates,
-                            stats.totalExpansions, stats.bestProgress, g_universalRuntime.stepDt()
+                            "SEARCH t={:.1f}s eps={:.0f} exp={} steps={} depth={} frontier={} best={:.2f}% "
+                            "tier={} macro={} refine={} mem={:.1f}MiB ETA={}",
+                            stats.elapsedSeconds,
+                            stats.expansionsPerSecond,
+                            stats.totalExpansions,
+                            stats.totalEngineSteps,
+                            stats.currentDepth,
+                            stats.frontierSize,
+                            stats.bestProgress,
+                            stats.strategyTier,
+                            stats.currentMacroTicks,
+                            g_universalRuntime.refinement(),
+                            static_cast<double>(stats.estimatedMemoryBytes) / (1024.0 * 1024.0),
+                            stats.etaSeconds >= 0.0
+                                ? fmt::format("{:.1f}s", stats.etaSeconds)
+                                : std::string("n/a")
                         ),
                         false,
                         stats.bestProgress
