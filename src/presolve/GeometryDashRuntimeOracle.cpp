@@ -216,7 +216,7 @@ struct GeometryDashRuntimeOracle::Impl {
         double levelTime = 0.0;
         float currentProgress = 0.0f;
         UniversalAction action{};
-        std::vector<ObjectState> objectStates;
+        std::shared_ptr<std::vector<ObjectState> const> objectStates;
         CanonicalSections sections;
         UniversalCanonicalState canonical;
     };
@@ -232,6 +232,8 @@ struct GeometryDashRuntimeOracle::Impl {
     RuntimeOracleValidation validation{};
     bool hasTimedOrTriggeredWorld = false;
     std::optional<CanonicalSections> lastCapturedSections;
+    std::vector<std::uint64_t> cachedObjectStateKey;
+    std::shared_ptr<std::vector<ObjectState> const> cachedObjectStates;
 
     explicit Impl(PlayLayer* value, double step) : layer(value), dt(step) {
         if (!layer || !layer->m_objects) return;
@@ -510,8 +512,18 @@ std::optional<UniversalToken> GeometryDashRuntimeOracle::capture() {
     snap->action = m_impl->action;
     snap->sections = sections;
     snap->canonical = m_impl->makeCanonical(sections);
-    snap->objectStates.reserve(m_impl->trackedObjects.size());
-    for (auto* object : m_impl->trackedObjects) snap->objectStates.push_back(captureObject(object));
+
+    // Structural sharing: object payloads are immutable after capture. Most
+    // search ticks do not change trigger/group/dynamic object state, so all
+    // those checkpoints can safely point at one payload instead of copying it.
+    if (!m_impl->cachedObjectStates || m_impl->cachedObjectStateKey != sections.dynamic) {
+        auto states = std::make_shared<std::vector<ObjectState>>();
+        states->reserve(m_impl->trackedObjects.size());
+        for (auto* object : m_impl->trackedObjects) states->push_back(captureObject(object));
+        m_impl->cachedObjectStates = states;
+        m_impl->cachedObjectStateKey = sections.dynamic;
+    }
+    snap->objectStates = m_impl->cachedObjectStates;
 
     const auto token = ++m_impl->nextToken;
     m_impl->snapshots.emplace(token, std::move(snap));
@@ -540,7 +552,9 @@ bool GeometryDashRuntimeOracle::restore(UniversalToken token) {
     layer->m_attempts = snap.attempts;
     layer->m_extraDelta = snap.extraDelta;
     layer->m_gameState.m_timeWarp = snap.timeWarp;
-    for (auto const& object : snap.objectStates) restoreObject(layer, object);
+    if (snap.objectStates) {
+        for (auto const& object : *snap.objectStates) restoreObject(layer, object);
+    }
     layer->updatePlayerCollisionBlocks();
     layer->checkSpawnObjects();
     layer->sortSectionVector();
