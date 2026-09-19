@@ -73,6 +73,9 @@ jobs:
           "${CXX[@]}" tests/UniversalMacroSearchPerformanceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/macro-perf.exe
           ./ci-tests/macro-perf.exe
 
+          "${CXX[@]}" tests/IncrementalExpansionBudgetTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/incremental-budget.exe
+          ./ci-tests/incremental-budget.exe
+
       - name: Existing solver gates
         shell: bash
         run: |
@@ -104,3 +107,48 @@ jobs:
           test -n "$(find build -type f -name 'thiago7tv.autobot-t7.dll' -print -quit)"
           test -n "$(find build -type f -name '*.geode' -print -quit)"
           echo "SOLVER_CLOSEOUT_INTERNAL_BUILD=PASS"
+
+      - name: Prepare runtime candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEODE_SOURCE="$(find build -type f -name '*.geode' -print -quit)"
+          test -n "$GEODE_SOURCE"
+
+          mkdir -p runtime-candidate
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-runtime-candidate.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-runtime-candidate.geode | awk '{print $1}')"
+
+          cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
+          AUTOBOT T7 — RUNTIME CANDIDATE
+          FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
+          RUN_ID=${GITHUB_RUN_ID}
+          SOURCE_BRANCH=${GITHUB_REF_NAME}
+          SHA256=${SHA256}
+
+          BUILD SYSTEM = PASS
+          SOLVER-CLOSEOUT CI = PASS
+
+          GENERAL SOLVER GAMEPLAY = PENDING USER RUNTIME
+          STEREO MADNESS 100% = PENDING USER RUNTIME
+
+          UNIVERSAL GD SOLVER = NOT VERIFIED
+          VERSION ACCEPTANCE = FAIL / OPEN
+
+          PUBLIC RELEASE = NO
+          GEODE INDEX = UNTOUCHED
+          EOF
+
+          printf '%s\n' "$GITHUB_SHA" > runtime-candidate/SOURCE-COMMIT.txt
+          sha256sum runtime-candidate/AutoBot-T7-runtime-candidate.geode > runtime-candidate/SHA256SUMS.txt
+
+          echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
+          echo "RUNTIME_CANDIDATE_PREPARED=PASS"
+
+      - name: Upload runtime candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoBot-T7-runtime-candidate
+          path: runtime-candidate/
+          if-no-files-found: error
+          retention-days: 14
