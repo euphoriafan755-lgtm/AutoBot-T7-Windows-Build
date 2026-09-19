@@ -114,7 +114,10 @@ void UniversalSearchCore::clearFrontierTokens(IUniversalStateOracle& oracle) {
     m_nextFrontier.clear();
 }
 
-void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
+void UniversalSearchCore::reset(IUniversalStateOracle* oracle, std::string_view reason) {
+    const auto previousStage = m_stage;
+    const auto nextResetSerial = m_resetSerial + 1;
+
     if (oracle) {
         clearFrontierTokens(*oracle);
         if (m_replayToken != kInvalidUniversalToken && m_replayToken != m_rootToken) {
@@ -127,6 +130,7 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
     }
 
     m_stage = UniversalSearchStage::Idle;
+    m_resetSerial = nextResetSerial;
     m_rootToken = kInvalidUniversalToken;
     m_rootObservation = {};
     m_rootCanonical = {};
@@ -149,6 +153,16 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle) {
     m_bestProgress = 0.0;
     m_rootProgress = 0.0;
     m_startedAt = {};
+
+    if (m_lifecycleCallback) {
+        m_lifecycleCallback(
+            m_lifecycleGeneration,
+            previousStage,
+            UniversalSearchStage::Idle,
+            reason,
+            m_resetSerial
+        );
+    }
 }
 
 bool UniversalSearchCore::refineStrategy() {
@@ -215,7 +229,7 @@ void UniversalSearchCore::remember(UniversalCanonicalState const& canonical, std
 }
 
 bool UniversalSearchCore::begin(IUniversalStateOracle& oracle) {
-    reset(&oracle);
+    reset(&oracle, "UniversalSearchCore::begin");
     m_startedAt = std::chrono::steady_clock::now();
 
     const auto root = oracle.observe();
@@ -512,6 +526,8 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
 UniversalSearchStats UniversalSearchCore::stats() const {
     UniversalSearchStats result{};
     result.stage = m_stage;
+    result.started = m_startedAt != std::chrono::steady_clock::time_point{};
+    result.resetSerial = m_resetSerial;
     result.totalExpansions = m_totalExpansions;
     result.totalEngineSteps = m_totalEngineSteps;
     result.frontierSize = m_frontier.size() + m_nextFrontier.size();
