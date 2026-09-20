@@ -312,10 +312,12 @@ UniversalObservation ShadowUniversalOracle::step(UniversalAction action) {
     ++m_state.shadowTick;
     ++m_simulatedSteps;
 
-    const auto seconds = calibration.sampleDt > 0.0 && std::isfinite(calibration.sampleDt)
-        ? calibration.sampleDt
-        : (1.0 / 60.0);
-    m_state.snapshot.levelTime += seconds;
+    const double physicsTicksPerSecond =
+        std::isfinite(calibration.physicsTicksPerSecond)
+        && calibration.physicsTicksPerSecond > 1.0
+        ? calibration.physicsTicksPerSecond
+        : 60.0;
+    m_state.snapshot.levelTime += 1.0 / physicsTicksPerSecond;
     m_state.snapshot.levelProgress = static_cast<float>(progressFor(state.x));
 
     const bool passedBoundary = m_direction >= 0.0
