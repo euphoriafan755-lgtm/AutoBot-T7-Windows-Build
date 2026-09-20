@@ -804,8 +804,8 @@ string(REPLACE "${_autobot_maxattempt_profile_old}" "${_autobot_maxattempt_profi
 # Retain the level while progress suppression may dereference it, clear it on
 # session reset, and after the original PlayLayer init rebind to the layer's
 # actual m_level object.
-set(_autobot_config "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/config.hpp")
-file(READ "\${_autobot_config}" _autobot_config_text)
+set(_autobot_config "${AUTOBOT_GDSOLVER_ROOT}/src/mod/config.hpp")
+file(READ "${_autobot_config}" _autobot_config_text)
 set(_autobot_progress_owner_old [=[
 inline LevelProgress g_progressAtStart;
 inline GJGameLevel* g_progressLevel = nullptr;
@@ -841,16 +841,16 @@ inline bool isPublicCustomLevel(GJGameLevel* level) {
     return level->m_levelType != GJLevelType::Main || id < 1 || id > 22;
 }
 ]=])
-string(FIND "\${_autobot_config_text}" "\${_autobot_progress_owner_old}" _autobot_progress_owner_pos)
+string(FIND "${_autobot_config_text}" "${_autobot_progress_owner_old}" _autobot_progress_owner_pos)
 if(_autobot_progress_owner_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver progress-level ownership anchor not found")
 endif()
-string(REPLACE "\${_autobot_progress_owner_old}" "\${_autobot_progress_owner_new}"
-    _autobot_config_text "\${_autobot_config_text}")
-file(WRITE "\${_autobot_config}" "\${_autobot_config_text}")
+string(REPLACE "${_autobot_progress_owner_old}" "${_autobot_progress_owner_new}"
+    _autobot_config_text "${_autobot_config_text}")
+file(WRITE "${_autobot_config}" "${_autobot_config_text}")
 
-set(_autobot_plan_io "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/plan_io.hpp")
-file(READ "\${_autobot_plan_io}" _autobot_plan_io_text)
+set(_autobot_plan_io "${AUTOBOT_GDSOLVER_ROOT}/src/mod/plan_io.hpp")
+file(READ "${_autobot_plan_io}" _autobot_plan_io_text)
 set(_autobot_progress_clear_old [=[
     g_blockedAch = 0; g_blockedStat = 0; g_blockedCoin = 0; g_blockedProgress = 0;
     g_progressRestores = 0;
@@ -863,16 +863,16 @@ set(_autobot_progress_clear_new [=[
     clearProgressLevel();
     g_progressRestores = 0;
 ]=])
-string(FIND "\${_autobot_plan_io_text}" "\${_autobot_progress_clear_old}" _autobot_progress_clear_pos)
+string(FIND "${_autobot_plan_io_text}" "${_autobot_progress_clear_old}" _autobot_progress_clear_pos)
 if(_autobot_progress_clear_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver progress-level cleanup anchor not found")
 endif()
-string(REPLACE "\${_autobot_progress_clear_old}" "\${_autobot_progress_clear_new}"
-    _autobot_plan_io_text "\${_autobot_plan_io_text}")
-file(WRITE "\${_autobot_plan_io}" "\${_autobot_plan_io_text}")
+string(REPLACE "${_autobot_progress_clear_old}" "${_autobot_progress_clear_new}"
+    _autobot_plan_io_text "${_autobot_plan_io_text}")
+file(WRITE "${_autobot_plan_io}" "${_autobot_plan_io_text}")
 
-set(_autobot_session "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/session.hpp")
-file(READ "\${_autobot_session}" _autobot_session_text)
+set(_autobot_session "${AUTOBOT_GDSOLVER_ROOT}/src/mod/session.hpp")
+file(READ "${_autobot_session}" _autobot_session_text)
 set(_autobot_session_config_begin_old [=[
 inline bool uiConfigureSession(int levelId) {
     if (g_uiMode == UI_MODE_SOLVE) {
@@ -882,12 +882,12 @@ inline bool uiConfigureSession(int levelId) {
     log::info("SESSION_CONFIG_BEGIN levelID={} uiMode={}", levelId, g_uiMode);
     if (g_uiMode == UI_MODE_SOLVE) {
 ]=])
-string(FIND "\${_autobot_session_text}" "\${_autobot_session_config_begin_old}" _autobot_session_config_begin_pos)
+string(FIND "${_autobot_session_text}" "${_autobot_session_config_begin_old}" _autobot_session_config_begin_pos)
 if(_autobot_session_config_begin_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver session-config begin anchor not found")
 endif()
-string(REPLACE "\${_autobot_session_config_begin_old}" "\${_autobot_session_config_begin_new}"
-    _autobot_session_text "\${_autobot_session_text}")
+string(REPLACE "${_autobot_session_config_begin_old}" "${_autobot_session_config_begin_new}"
+    _autobot_session_text "${_autobot_session_text}")
 
 set(_autobot_session_config_end_old [=[
     solver::g_solveStart = std::chrono::steady_clock::now();
@@ -902,12 +902,12 @@ set(_autobot_session_config_end_new [=[
     return true;
 }
 ]=])
-string(FIND "\${_autobot_session_text}" "\${_autobot_session_config_end_old}" _autobot_session_config_end_pos)
+string(FIND "${_autobot_session_text}" "${_autobot_session_config_end_old}" _autobot_session_config_end_pos)
 if(_autobot_session_config_end_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver session-config end anchor not found")
 endif()
-string(REPLACE "\${_autobot_session_config_end_old}" "\${_autobot_session_config_end_new}"
-    _autobot_session_text "\${_autobot_session_text}")
+string(REPLACE "${_autobot_session_config_end_old}" "${_autobot_session_config_end_new}"
+    _autobot_session_text "${_autobot_session_text}")
 
 set(_autobot_session_end_old [=[
 inline void endSession(const std::string& why) {
@@ -920,13 +920,13 @@ inline void endSession(const std::string& why) {
               why, static_cast<void*>(g_progressLevel));
     writeResult("SESSION_END reason=" + why);
 ]=])
-string(FIND "\${_autobot_session_text}" "\${_autobot_session_end_old}" _autobot_session_end_pos)
+string(FIND "${_autobot_session_text}" "${_autobot_session_end_old}" _autobot_session_end_pos)
 if(_autobot_session_end_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver session-end checkpoint anchor not found")
 endif()
-string(REPLACE "\${_autobot_session_end_old}" "\${_autobot_session_end_new}"
-    _autobot_session_text "\${_autobot_session_text}")
-file(WRITE "\${_autobot_session}" "\${_autobot_session_text}")
+string(REPLACE "${_autobot_session_end_old}" "${_autobot_session_end_new}"
+    _autobot_session_text "${_autobot_session_text}")
+file(WRITE "${_autobot_session}" "${_autobot_session_text}")
 
 set(_autobot_play_init_old [=[
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
@@ -1000,12 +1000,12 @@ set(_autobot_play_init_new [=[
         return true;
     }
 ]=])
-string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_play_init_old}" _autobot_play_init_pos)
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_play_init_old}" _autobot_play_init_pos)
 if(_autobot_play_init_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver PlayLayer::init lifecycle anchor not found")
 endif()
-string(REPLACE "\${_autobot_play_init_old}" "\${_autobot_play_init_new}"
-    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+string(REPLACE "${_autobot_play_init_old}" "${_autobot_play_init_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
 
 set(_autobot_quit_checkpoint_old [=[
     void onQuit() {
@@ -1019,12 +1019,12 @@ set(_autobot_quit_checkpoint_new [=[
         if (g_started) writeResult("LEVEL_QUIT");
         // Exiting from the pause menu = session aborted. endSession alone is not enough:
 ]=])
-string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_quit_checkpoint_old}" _autobot_quit_checkpoint_pos)
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_quit_checkpoint_old}" _autobot_quit_checkpoint_pos)
 if(_autobot_quit_checkpoint_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver level-quit checkpoint anchor not found")
 endif()
-string(REPLACE "\${_autobot_quit_checkpoint_old}" "\${_autobot_quit_checkpoint_new}"
-    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+string(REPLACE "${_autobot_quit_checkpoint_old}" "${_autobot_quit_checkpoint_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
 
 set(_autobot_reset_checkpoint_old [=[
     void resetLevel() {
@@ -1038,17 +1038,17 @@ set(_autobot_reset_checkpoint_new [=[
         if (g_started) writeResult("LEVEL_RESET tick=" + std::to_string((long long)g_tick));
         // A reset of an old layer (embers awaiting the scene swap) must not touch the books
 ]=])
-string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_reset_checkpoint_old}" _autobot_reset_checkpoint_pos)
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_reset_checkpoint_old}" _autobot_reset_checkpoint_pos)
 if(_autobot_reset_checkpoint_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver level-reset checkpoint anchor not found")
 endif()
-string(REPLACE "\${_autobot_reset_checkpoint_old}" "\${_autobot_reset_checkpoint_new}"
-    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+string(REPLACE "${_autobot_reset_checkpoint_old}" "${_autobot_reset_checkpoint_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
 
-file(WRITE "\${_autobot_play_hooks}" "\${_autobot_play_hooks_text}")
+file(WRITE "${_autobot_play_hooks}" "${_autobot_play_hooks_text}")
 
 # Solver-start checkpoints. No search behavior changes.
-file(READ "\${_autobot_repair}" _autobot_repair_text)
+file(READ "${_autobot_repair}" _autobot_repair_text)
 set(_autobot_solver_start_begin_old [=[
 inline void start(GJBaseGameLayer* l) {
     if (!l) return;
@@ -1063,12 +1063,12 @@ inline void start(GJBaseGameLayer* l) {
     writeResult("SOLVER_START_BEGIN levelID=" + std::to_string(g_cfg.levelId));
     if (refuseIfPlatformer(l)) return;
 ]=])
-string(FIND "\${_autobot_repair_text}" "\${_autobot_solver_start_begin_old}" _autobot_solver_start_begin_pos)
+string(FIND "${_autobot_repair_text}" "${_autobot_solver_start_begin_old}" _autobot_solver_start_begin_pos)
 if(_autobot_solver_start_begin_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver solver-start begin anchor not found")
 endif()
-string(REPLACE "\${_autobot_solver_start_begin_old}" "\${_autobot_solver_start_begin_new}"
-    _autobot_repair_text "\${_autobot_repair_text}")
+string(REPLACE "${_autobot_solver_start_begin_old}" "${_autobot_solver_start_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
 
 set(_autobot_solver_start_end_old [=[
     if (!startBootstrapRecord())
@@ -1085,13 +1085,13 @@ set(_autobot_solver_start_end_new [=[
               g_csv.size(), bootstrapStarted ? 1 : 0);
 }
 ]=])
-string(FIND "\${_autobot_repair_text}" "\${_autobot_solver_start_end_old}" _autobot_solver_start_end_pos)
+string(FIND "${_autobot_repair_text}" "${_autobot_solver_start_end_old}" _autobot_solver_start_end_pos)
 if(_autobot_solver_start_end_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver solver-start end anchor not found")
 endif()
-string(REPLACE "\${_autobot_solver_start_end_old}" "\${_autobot_solver_start_end_new}"
-    _autobot_repair_text "\${_autobot_repair_text}")
-file(WRITE "\${_autobot_repair}" "\${_autobot_repair_text}")
+string(REPLACE "${_autobot_solver_start_end_old}" "${_autobot_solver_start_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+file(WRITE "${_autobot_repair}" "${_autobot_repair_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.
