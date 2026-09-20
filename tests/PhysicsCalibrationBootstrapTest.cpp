@@ -1,4 +1,5 @@
 #include "autobot/solver/RealtimePlanner.hpp"
+#include "autobot/solver/PhysicsBootstrap.hpp"
 #include "autobot/world/CollisionWorld.hpp"
 
 #include <cassert>
@@ -46,6 +47,9 @@ int main() {
     world::DynamicWorldModel dynamicWorld;
     solver::RealtimePlanner planner;
 
+    assert(solver::physicsStatus(validation, core::GameMode::Cube)
+        == solver::PhysicsModelStatus::Provisional);
+
     const auto plan = planner.plan(
         snapshot,
         collision,
@@ -59,8 +63,32 @@ int main() {
     assert(plan.physicsModelStatus == solver::PhysicsModelStatus::Provisional);
     assert(plan.reason.find("WAITING FOR PHYSICS UNIT CALIBRATION") == std::string::npos);
 
+    auto sample0 = snapshot;
+    sample0.solverSampleID = 1;
+    sample0.levelTime = 0.0;
+    validation.observe(sample0, control::InputAction::NoPress, false);
+    assert(solver::physicsStatus(validation, core::GameMode::Cube)
+        == solver::PhysicsModelStatus::Provisional);
+
+    auto sample1 = sample0;
+    sample1.solverSampleID = 2;
+    sample1.levelTime = 1.0 / 60.0;
+    sample1.player.x += 5.0;
+    validation.observe(sample1, control::InputAction::NoPress, false);
+    assert(solver::physicsStatus(validation, core::GameMode::Cube)
+        == solver::PhysicsModelStatus::Calibrating);
+
+    auto sample2 = sample1;
+    sample2.solverSampleID = 3;
+    sample2.levelTime = 2.0 / 60.0;
+    sample2.player.x += 5.0;
+    validation.observe(sample2, control::InputAction::NoPress, false);
+    assert(solver::physicsStatus(validation, core::GameMode::Cube)
+        == solver::PhysicsModelStatus::Verified);
+
     std::cout
-        << "PHYSICS_CALIBRATION_BOOTSTRAP_TEST=PASS "
-        << "model=PROVISIONAL control_ready=YES no_calibration_deadlock=YES\n";
+        << "PHYSICS_BOOTSTRAP_TEST=PASS "
+        << "model=PROVISIONAL->CALIBRATING->VERIFIED "
+        << "control_ready=YES no_calibration_deadlock=YES\n";
     return 0;
 }
