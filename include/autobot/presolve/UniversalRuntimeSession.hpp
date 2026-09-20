@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -49,7 +50,7 @@ public:
     [[nodiscard]] bool error() const { return m_stage == UniversalRuntimeStage::Error; }
     [[nodiscard]] bool owns(PlayLayer* layer) const { return m_owner == layer && m_stage != UniversalRuntimeStage::Idle; }
     [[nodiscard]] std::string const& reason() const { return m_reason; }
-    [[nodiscard]] UniversalSearchStats stats() const { return m_search.stats(); }
+    [[nodiscard]] UniversalSearchStats stats() const;
     [[nodiscard]] std::size_t policySize() const { return m_policy.size(); }
     [[nodiscard]] std::size_t playbackCursor() const { return m_playbackCursor; }
     [[nodiscard]] double stepDt() const;
@@ -57,10 +58,14 @@ public:
     [[nodiscard]] std::size_t recoveryCount() const { return m_recoveryCount; }
     [[nodiscard]] std::size_t stallRecoveryCount() const { return m_stallRecoveryCount; }
     [[nodiscard]] std::uint64_t generation() const { return m_generation; }
+    [[nodiscard]] std::size_t liveRerootCount() const { return m_liveRerootCount; }
+    [[nodiscard]] bool fullPolicyAvailable() const { return m_fullPolicyAvailable; }
     [[nodiscard]] RuntimeOracleValidation validation() const;
 
 private:
     bool restartAtFinerResolution();
+    bool syncLiveRoot();
+    void accumulateCurrentSearchEpoch();
     bool beginRecoveryFromToken(UniversalToken token, std::string reason);
     bool canonicalMatchesExpected(std::size_t index, UniversalToken token) const;
     bool validateSearchCoreInvariant(std::string_view context);
@@ -82,6 +87,12 @@ private:
     std::size_t m_recoveryCount = 0;
     std::size_t m_stallRecoveryCount = 0;
     std::size_t m_searchSliceCount = 0;
+    std::size_t m_liveRerootCount = 0;
+    std::size_t m_liveAccumulatedExpansions = 0;
+    std::size_t m_liveAccumulatedEngineSteps = 0;
+    double m_liveBestProgress = 0.0;
+    bool m_fullPolicyAvailable = false;
+    std::chrono::steady_clock::time_point m_liveStartedAt{};
     std::uint64_t m_generation = 0;
     double m_accumulator = 0.0;
     std::string m_reason = "IDLE";
