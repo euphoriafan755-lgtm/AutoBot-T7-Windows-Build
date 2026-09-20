@@ -1,5 +1,6 @@
 #include "autobot/solver/PortalTransition.hpp"
 
+#if __has_include(<Geode/Geode.hpp>)
 #include <Geode/Geode.hpp>
 
 using namespace geode::prelude;
@@ -129,3 +130,5 @@ PortalApplication PortalTransitionResolver::apply(
 }
 
 } // namespace autobot::solver
+
+#endif // __has_include(<Geode/Geode.hpp>)
