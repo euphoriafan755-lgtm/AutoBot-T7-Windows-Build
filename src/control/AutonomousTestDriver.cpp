@@ -442,25 +442,7 @@ AutonomousDecision AutonomousTestDriver::decide(
         m_dynamicWorld.observe(collisionWorld, snapshot.solverSampleID);
     }
 
-    const bool unitHarnessWithoutPreRun = m_preRun.stage() == presolve::PreRunStage::Idle;
-    if (!m_preRun.ready() && !unitHarnessWithoutPreRun) {
-        decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
-        decision.plan.worldReady = collisionWorld.ready();
-        decision.plan.physicsReady = false;
-        decision.plan.plannerReady = false;
-        decision.plan.active = false;
-        decision.plan.status = solver::SolverStatus::Waiting;
-        decision.plan.inputAction = InputAction::SafeStop;
-        decision.plan.p2InputAction = InputAction::SafeStop;
-        decision.plan.reason = "PRE-RUN NOT READY: " + m_preRun.solution().reason;
-        decision.action = InputAction::SafeStop;
-        decision.p2Action = InputAction::SafeStop;
-        decision.reason = decision.plan.reason;
-        decision.active = false;
-        decision.ownership = InputOwnership::None;
-        clearActionCountdown();
-        m_actionCountdownP2 = {};
-    } else if (currentlyDead) {
+    if (currentlyDead) {
         decision.plan.gameStateReady = false;
         decision.plan.worldReady = collisionWorld.ready();
         decision.plan.physicsReady = true;
@@ -476,7 +458,9 @@ AutonomousDecision AutonomousTestDriver::decide(
         m_actionCountdownP2 = {};
     } else {
         const auto policy = m_preRun.policyFor(snapshot, botHolding, botHoldingP2);
-        if (policy.matched && !policy.desync) {
+        const bool verifiedPolicyUsable = m_preRun.ready() && policy.matched && !policy.desync;
+
+        if (verifiedPolicyUsable) {
             decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
             decision.plan.worldReady = collisionWorld.ready();
             decision.plan.physicsReady = true;
@@ -494,11 +478,10 @@ AutonomousDecision AutonomousTestDriver::decide(
             decision.ownership = InputOwnership::Bot;
             clearActionCountdown();
             m_actionCountdownP2 = {};
-        } else if (policy.desync || unitHarnessWithoutPreRun) {
-            // Production runtime reaches this planner only for recovery from a
-            // verified pre-run policy desynchronization. The Idle exception is
-            // retained solely for isolated regression harnesses that construct
-            // AutonomousTestDriver without the PlayLayer pre-run lifecycle.
+        } else {
+            // Live runtime never waits for a full pre-run policy. The same
+            // realtime planner that produces Show Trajectory owns the immediate
+            // legal input while global search continues rolling in the runtime.
             decision.plan = m_planner.plan(
                 snapshot,
                 collisionWorld,
@@ -515,7 +498,8 @@ AutonomousDecision AutonomousTestDriver::decide(
                 decision.reason = "DESYNC RECOVERY: " + decision.plan.reason;
                 decision.plan.reason = decision.reason;
             } else {
-                decision.reason = decision.plan.reason;
+                decision.reason = "LIVE MPC: " + decision.plan.reason;
+                decision.plan.reason = decision.reason;
             }
             decision.targetPrimitiveIndex = decision.plan.targetPrimitiveIndex;
             decision.targetObjectID = decision.plan.targetObjectID;
@@ -527,18 +511,6 @@ AutonomousDecision AutonomousTestDriver::decide(
             if (snapshot.valid && !snapshot.player.dead) {
                 pushTruthSample(makeTruthSample(snapshot, decision.plan));
             }
-        } else {
-            decision.plan.gameStateReady = snapshot.valid && !snapshot.player.dead;
-            decision.plan.worldReady = collisionWorld.ready();
-            decision.plan.physicsReady = true;
-            decision.plan.plannerReady = false;
-            decision.plan.status = solver::SolverStatus::Waiting;
-            decision.plan.reason = policy.reason;
-            decision.action = InputAction::SafeStop;
-            decision.p2Action = InputAction::SafeStop;
-            decision.reason = policy.reason;
-            decision.active = false;
-            decision.ownership = InputOwnership::None;
         }
     }
 
