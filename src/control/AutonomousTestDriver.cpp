@@ -126,6 +126,49 @@ void AutonomousTestDriver::selectTrajectoryForCurrentSample(
     }
 }
 
+bool AutonomousTestDriver::applyGlobalPolicyGuidance(
+    solver::PlanDecision& plan,
+    bool globalDesiredHold,
+    bool botHolding
+) {
+    const InputAction desired = globalDesiredHold
+        ? (botHolding ? InputAction::Hold : InputAction::Press)
+        : (botHolding ? InputAction::Release : InputAction::NoPress);
+
+    std::size_t best = std::numeric_limits<std::size_t>::max();
+    int bestPriority = -1;
+    double bestScore = -std::numeric_limits<double>::infinity();
+
+    for (std::size_t i = 0; i < plan.trajectories.size(); ++i) {
+        auto const& trajectory = plan.trajectories[i];
+        if (trajectory.fatalCollision) continue;
+
+        const bool wantHold = trajectory.candidate.desiredHoldAt(0);
+        const InputAction candidateAction = wantHold
+            ? (botHolding ? InputAction::Hold : InputAction::Press)
+            : (botHolding ? InputAction::Release : InputAction::NoPress);
+        if (candidateAction != desired) continue;
+
+        int priority = 1;
+        if (trajectory.horizonConclusive) ++priority;
+        if (trajectory.globalRouteCompatible) ++priority;
+
+        if (best == std::numeric_limits<std::size_t>::max()
+            || priority > bestPriority
+            || (priority == bestPriority && trajectory.score > bestScore)) {
+            best = i;
+            bestPriority = priority;
+            bestScore = trajectory.score;
+        }
+    }
+
+    if (best == std::numeric_limits<std::size_t>::max()) return false;
+
+    selectTrajectoryForCurrentSample(plan, best, botHolding);
+    plan.reason = "GLOBAL POLICY + LOCAL MPC: " + plan.trajectories[best].candidate.label;
+    return true;
+}
+
 void AutonomousTestDriver::clearActionCountdown() {
     m_actionCountdown = {};
 }
@@ -377,7 +420,8 @@ AutonomousDecision AutonomousTestDriver::decide(
     world::CollisionQueryResult const& query,
     bool enabled,
     bool botHolding,
-    bool botHoldingP2
+    bool botHoldingP2,
+    std::optional<bool> globalDesiredHold
 ) {
     (void)query;
 
@@ -492,6 +536,16 @@ AutonomousDecision AutonomousTestDriver::decide(
                 botHoldingP2,
                 snapshot.dualMode ? &m_validationP2 : nullptr
             );
+            const bool globalApplied = globalDesiredHold.has_value()
+                && applyGlobalPolicyGuidance(
+                    decision.plan,
+                    *globalDesiredHold,
+                    botHolding
+                );
+            if (globalApplied) {
+                decision.plan.reason += " [GLOBAL PREFIX APPLIED]";
+            }
+
             decision.action = decision.plan.inputAction;
             decision.p2Action = decision.plan.p2InputAction;
             if (policy.desync) {
