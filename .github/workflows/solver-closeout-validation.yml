@@ -169,7 +169,7 @@ jobs:
             src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp
             src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp
             src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp
-            src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp
+            src/solver/PortalTransition.cpp src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp
           )
           "${CXX[@]}" tests/ModelTruthTest.cpp "${COMMON[@]}" -o ci-tests/model-truth.exe
           ./ci-tests/model-truth.exe
