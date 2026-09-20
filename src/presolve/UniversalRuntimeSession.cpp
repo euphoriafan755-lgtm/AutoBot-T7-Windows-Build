@@ -121,12 +121,14 @@ bool UniversalRuntimeSession::begin(
     m_liveRerootCount = 0;
     m_liveFramesObserved = 0;
     m_liveFramesSinceRoot = 0;
+    m_livePhysicsTicksSinceRoot = 0;
     m_liveAccumulatedExpansions = 0;
     m_liveAccumulatedEngineSteps = 0;
     m_liveBestProgress = static_cast<double>(snapshot.levelProgress);
     m_fullPolicyAvailable = false;
     m_liveStartedAt = std::chrono::steady_clock::now();
     m_owner = owner;
+    m_validation = validation;
 
     m_search.setLifecycleGeneration(m_generation);
     m_search.setLifecycleCallback([this](
@@ -210,6 +212,7 @@ void UniversalRuntimeSession::reset(std::string_view reason) {
     m_search.reset(m_oracle.get(), reason);
     m_owner = nullptr;
     m_oracle.reset();
+    m_validation = nullptr;
     m_pendingLiveSnapshot = {};
     m_rootLiveSnapshot = {};
     m_lastLiveSnapshot = {};
@@ -256,11 +259,22 @@ void UniversalRuntimeSession::updateLiveRoot(
     ++m_liveFramesObserved;
     ++m_liveFramesSinceRoot;
 
+    const double physicsTicksPerSecond = m_validation
+        ? effectivePhysicsTicksPerSecond(
+            m_validation->calibration(snapshot.player.mode)
+        )
+        : 60.0;
+    m_livePhysicsTicksSinceRoot = physicsTicksElapsed(
+        m_rootLiveSnapshot,
+        snapshot,
+        physicsTicksPerSecond
+    );
+
     const auto assessment = assessLiveRoot(
         m_rootLiveSnapshot,
         m_lastLiveSnapshot,
         snapshot,
-        m_liveFramesSinceRoot,
+        m_livePhysicsTicksSinceRoot,
         m_policy.size()
     );
 
@@ -272,11 +286,12 @@ void UniversalRuntimeSession::updateLiveRoot(
         m_liveRootDirty = true;
         log::info(
             "ROLLING_SEARCH_REROOT_REQUEST generation={} reason={} liveFrames={} framesSinceRoot={} "
-            "policyTicks={} rerootCount={}",
+            "physicsTicksSinceRoot={} policyTicks={} rerootCount={}",
             m_generation,
             assessment.reason,
             m_liveFramesObserved,
             m_liveFramesSinceRoot,
+            m_livePhysicsTicksSinceRoot,
             m_policy.size(),
             m_liveRerootCount
         );
@@ -318,6 +333,7 @@ bool UniversalRuntimeSession::rerootShadow(std::string_view reason) {
     m_rootLiveSnapshot = m_pendingLiveSnapshot;
     m_lastLiveSnapshot = m_pendingLiveSnapshot;
     m_liveFramesSinceRoot = 0;
+    m_livePhysicsTicksSinceRoot = 0;
 
     const auto after = m_search.stats();
     log::info(
