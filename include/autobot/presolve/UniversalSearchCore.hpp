@@ -146,6 +146,7 @@ public:
     }
     [[nodiscard]] UniversalSearchStage stage() const { return m_stage; }
     [[nodiscard]] std::vector<UniversalAction> const& policy() const { return m_policy; }
+    [[nodiscard]] std::vector<UniversalAction> bestPrefix() const;
     [[nodiscard]] std::vector<UniversalCanonicalState> const& replayStates() const { return m_replayStates; }
     [[nodiscard]] UniversalSearchStats stats() const;
 
@@ -211,6 +212,7 @@ private:
     std::vector<UniversalCanonicalState> m_replayStates;
     std::size_t m_replayCursor = 0;
     UniversalToken m_replayToken = kInvalidUniversalToken;
+    std::size_t m_bestMetaIndex = 0;
     std::size_t m_totalExpansions = 0;
     std::size_t m_totalEngineSteps = 0;
     std::size_t m_currentDepth = 0;
