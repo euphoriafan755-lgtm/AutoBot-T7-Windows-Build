@@ -91,6 +91,23 @@ int main() {
     assert(plan.good());
     const auto bytes = static_cast<long long>(plan.tellg());
 
+    assert(dp::g_outcome.statesExpanded > 0);
+    assert(dp::g_outcome.dedupHits > 0);
+    assert(dp::g_outcome.peakAliveStates > 0);
+    assert(dp::g_outcome.peakMemoryBytes > 0);
+    assert(dp::g_outcome.searchSimulatedPhysicsTicks == dp::g_outcome.statesExpanded);
+    assert(dp::g_outcome.candidateReplayTicks >= 0);
+
+    std::cout << "SOLVE_RUNTIME_COUNTERS_TEST=PASS"
+              << " statesExpanded=" << dp::g_outcome.statesExpanded
+              << " dedupHits=" << dp::g_outcome.dedupHits
+              << " capHits=" << dp::g_outcome.capHits
+              << " statesDroppedByCap=" << dp::g_outcome.statesDroppedByCap
+              << " peakAliveStates=" << dp::g_outcome.peakAliveStates
+              << " peakMemoryBytes=" << dp::g_outcome.peakMemoryBytes
+              << " candidateReplayTicks=" << dp::g_outcome.candidateReplayTicks
+              << "\n";
+
     std::cout << std::fixed << std::setprecision(3)
               << "SOLVE_PERF_PROFILE_CURRENT=PASS"
               << " wall_s=" << sec
