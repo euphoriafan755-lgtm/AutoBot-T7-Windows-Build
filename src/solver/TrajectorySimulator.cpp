@@ -135,7 +135,10 @@ SimState makeState(core::GameSnapshot const& snapshot, ModeCalibration const& ca
     state.alive = !snapshot.player.dead;
     state.objectWidth = std::max(1.0, snapshot.player.objectBoundsWidth);
     state.objectHeight = std::max(1.0, snapshot.player.objectBoundsHeight);
-    state.sampleDt = calibration.normalizedStepDt();
+    const double measuredStep = calibration.normalizedStepDt();
+    state.sampleDt = std::isfinite(measuredStep) && measuredStep > 0.00001
+        ? measuredStep
+        : 1.0;
     state.verticalPositionScale = calibration.yPositionScale();
     state.rawGravity = snapshot.player.gravity;
     state.gravityModifier = snapshot.player.gravityModifier;
