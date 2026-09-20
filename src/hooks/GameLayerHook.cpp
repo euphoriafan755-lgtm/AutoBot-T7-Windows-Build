@@ -419,7 +419,7 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         bool pendingPressResponse = false;
         bool runtimeAutoplayActiveLogged = false;
         bool firstRequiredActionLogged = false;
-        bool preRunFreezeActive = true;
+        bool preRunFreezeActive = false;
         bool freezePassLogged = false;
         bool freezeFailLogged = false;
         autobot::presolve::FreezeInvariantSnapshot freezeAnchor{};
