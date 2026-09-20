@@ -690,13 +690,13 @@ string(REPLACE "${_autobot_death_start_old}" "${_autobot_death_start_new}"
 set(_autobot_verify_begin_old [=[
     g_cfg.inputs = g_plan;
     g_paused = false;
-    // The screen stays off here.
+    // The screen stays off here. These replays are the loop TESTING a candidate, not showing a
 ]=])
 set(_autobot_verify_begin_new [=[
     g_cfg.inputs = g_plan;
     g_paused = false;
     perfBeginVerification();
-    // The screen stays off here.
+    // The screen stays off here. These replays are the loop TESTING a candidate, not showing a
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_verify_begin_old}" _autobot_verify_begin_pos)
 if(_autobot_verify_begin_pos EQUAL -1)
