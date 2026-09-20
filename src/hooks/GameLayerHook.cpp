@@ -885,20 +885,12 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             ? snapshot.levelTime
             : m_gameState.m_levelTime;
 
-        auto decision = m_fields->autonomousDriver.decide(
-            snapshot,
-            m_fields->collisionWorld,
-            query,
-            autobotEnabled,
-            m_fields->inputController.botHolding(),
-            m_fields->inputController.botHoldingP2()
-        );
+        const bool botHolding = m_fields->inputController.botHolding();
+        const bool botHoldingP2 = m_fields->inputController.botHoldingP2();
+        std::optional<bool> globalDesiredHold;
 
         if (g_universalRuntime.owner() == this && g_universalRuntime.searching()) {
-            g_universalRuntime.updateLiveRoot(
-                snapshot,
-                m_fields->inputController.botHolding()
-            );
+            g_universalRuntime.updateLiveRoot(snapshot, botHolding);
 
             const auto shadowSearchStart = PerfClock::now();
             {
@@ -923,7 +915,31 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
                     g_universalSearchSliceBudget / 2U
                 );
             }
+
+            globalDesiredHold = g_universalRuntime.recommendedP1Hold();
+            if (globalDesiredHold.has_value()
+                && (m_fields->tick <= 8 || (m_fields->tick % 120U) == 0U)) {
+                log::info(
+                    "GLOBAL_POLICY_GUIDANCE sample={} desiredHold={} framesSinceRoot={} "
+                    "reroots={} policyAvailable={}",
+                    snapshot.solverSampleID,
+                    *globalDesiredHold ? "YES" : "NO",
+                    g_universalRuntime.liveFramesSinceRoot(),
+                    g_universalRuntime.liveRerootCount(),
+                    g_universalRuntime.fullPolicyAvailable() ? "FULL" : "PREFIX"
+                );
+            }
         }
+
+        auto decision = m_fields->autonomousDriver.decide(
+            snapshot,
+            m_fields->collisionWorld,
+            query,
+            autobotEnabled,
+            botHolding,
+            botHoldingP2,
+            globalDesiredHold
+        );
 
         if (g_universalRuntime.owner() == this) {
             const auto liveSearch = g_universalRuntime.stats();
