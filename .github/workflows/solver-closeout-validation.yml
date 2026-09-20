@@ -91,6 +91,70 @@ jobs:
           "${CXX[@]}" tests/LiveSearchRoundtripTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/live-roundtrip.exe
           ./ci-tests/live-roundtrip.exe
 
+          SHADOW_COMMON=(
+            src/presolve/ShadowUniversalOracle.cpp
+            src/presolve/UniversalSearchCore.cpp
+            src/solver/PhysicsModels.cpp
+            src/world/CollisionWorld.cpp
+            src/world/SpatialHash.cpp
+          )
+
+          "${CXX[@]}" tests/NoInternalGDUpdateDuringSearchTest.cpp "${SHADOW_COMMON[@]}" -o ci-tests/no-internal-gd-update.exe
+          ./ci-tests/no-internal-gd-update.exe
+
+          "${CXX[@]}" tests/ShadowSimDeterminismTest.cpp "${SHADOW_COMMON[@]}" -o ci-tests/shadow-determinism.exe
+          ./ci-tests/shadow-determinism.exe
+
+      - name: Search/live-engine boundary audit
+        shell: python
+        run: |
+          from pathlib import Path
+
+          search_paths = [
+              "src/presolve/UniversalSearchCore.cpp",
+              "src/presolve/UniversalRuntimeSession.cpp",
+              "src/presolve/ShadowUniversalOracle.cpp",
+              "src/solver/RealtimePlanner.cpp",
+              "src/solver/TrajectorySimulator.cpp",
+              "src/solver/GlobalPlanner.cpp",
+          ]
+
+          forbidden = [
+              "GJBaseGameLayer::update",
+              "PlayLayer::update",
+              "createCheckpoint",
+              "loadFromCheckpoint",
+              "GeometryDashRuntimeOracle",
+          ]
+
+          for path in search_paths:
+              text = Path(path).read_text(encoding="utf-8")
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"FORBIDDEN SEARCH ENGINE PATH: {path}: {token}")
+
+          hook = Path("src/hooks/GameLayerHook.cpp").read_text(encoding="utf-8")
+          if "setStepCallback" in hook or "g_universalInternalStep" in hook or "innerDt" in hook:
+              raise SystemExit("LIVE HOOK STILL CONTAINS INTERNAL GD SIMULATION PATH")
+
+          start = hook.index("class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer)")
+          end = hook.index("class $modify(AutoBotT7GameLayerHook, PlayLayer)", start)
+          base_hook = hook[start:end]
+
+          calls = base_hook.count("GJBaseGameLayer::update(dt);")
+          if calls != 2:
+              raise SystemExit(f"EXPECTED TWO SOURCE CALLS (owned path + fallback), FOUND {calls}")
+
+          owned = base_hook.split("if (universalOwns)", 1)[1].split("return;", 1)[0]
+          if owned.count("GJBaseGameLayer::update(dt);") != 1:
+              raise SystemExit("OWNED LIVE FRAME DOES NOT CONTAIN EXACTLY ONE REAL UPDATE")
+
+          if "searchSlice" in base_hook or "ShadowUniversalOracle" in base_hook:
+              raise SystemExit("SEARCH WORK MUST NOT RUN INSIDE GJBaseGameLayer::update")
+
+          print("NO_INTERNAL_GD_UPDATE_DURING_SEARCH_SOURCE_AUDIT=PASS")
+          print("ONE_REAL_UPDATE_PER_FRAME_TEST=PASS")
+
       - name: Existing solver gates
         shell: bash
         run: |
