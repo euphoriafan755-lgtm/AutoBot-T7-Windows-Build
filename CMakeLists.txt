@@ -53,7 +53,47 @@ string(REPLACE
     _autobot_cli_text
     "${_autobot_cli_text}"
 )
+# Performance-only patch #2. A fixup replay compares model vs GD only
+# through deathTick, but upstream replay kept simulating to the end of the level.
+# Let replay honor the already-parsed --horizon only when explicitly supplied;
+# all existing unbounded replay/search semantics remain unchanged.
+set(_autobot_replay_loop_old "        for (long long t = t0 + 1; t <= tEnd; ++t) {")
+set(_autobot_replay_loop_new [=[
+        const long long replayEnd =
+            horizon > 0 ? std::min(tEnd, t0 + horizon) : tEnd;
+        for (long long t = t0 + 1; t <= replayEnd; ++t) {
+]=])
+string(FIND "${_autobot_cli_text}" "${_autobot_replay_loop_old}" _autobot_replay_loop_pos)
+if(_autobot_replay_loop_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver replay loop anchor not found")
+endif()
+string(REPLACE "${_autobot_replay_loop_old}" "${_autobot_replay_loop_new}"
+    _autobot_cli_text "${_autobot_cli_text}")
 file(WRITE "${_autobot_cli}" "${_autobot_cli_text}")
+
+set(_autobot_repair "${autobot_gdsolver_upstream_SOURCE_DIR}/src/mod/repair.hpp")
+file(READ "${_autobot_repair}" _autobot_repair_text)
+set(_autobot_fixup_args_old [=[
+    std::vector<std::string> a{"--replay", g_planPath, "--start", startArgStr,
+                               "--out", base,
+                               "--cap", std::to_string(kCap),
+]=])
+set(_autobot_fixup_args_new [=[
+    // The recorder never reads model rows after GD's death. Bound this replay
+    // to exactly the compared interval instead of simulating the unused tail.
+    const long long compareTicks = std::max<long long>(1, deathTick - t0);
+    std::vector<std::string> a{"--replay", g_planPath, "--start", startArgStr,
+                               "--horizon", std::to_string(compareTicks),
+                               "--out", base,
+                               "--cap", std::to_string(kCap),
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_fixup_args_old}" _autobot_fixup_args_pos)
+if(_autobot_fixup_args_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver fixup argv anchor not found")
+endif()
+string(REPLACE "${_autobot_fixup_args_old}" "${_autobot_fixup_args_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+file(WRITE "${_autobot_repair}" "${_autobot_repair_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.

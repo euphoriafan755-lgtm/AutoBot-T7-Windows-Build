@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -19,6 +20,41 @@ std::string join(std::vector<std::string> const& fields) {
         out << fields[i];
     }
     return out.str();
+}
+
+std::string generatedLongSafeLevel() {
+    const std::vector<std::string> header{
+        "id","type","cx","cy","w","h","groups","uid","radius","rot",
+        "sy0","sy1","shz","sdir","sup","w0","h0","tpy","tpg","tpix",
+        "tpiy","tw","zoom","zdur","zease","zrate","mvdir","gnddir",
+        "optp1","optp2","flipx","flipy","nofx","notouch","tpex","tpey",
+        "dis","editvel","vmodx","vmody","ovrvel","force","free","touch",
+        "spawn","chan","axis","exstat"
+    };
+
+    // Extends goalX without touching the ground route. The same empty plan can
+    // therefore be replayed for thousands of physics ticks.
+    std::vector<std::string> marker(header.size(), "0");
+    marker[0] = "8";
+    marker[1] = "2";
+    marker[2] = "20000";
+    marker[3] = "1000";
+    marker[4] = "30";
+    marker[5] = "30";
+    marker[6] = "";
+    marker[7] = "9001";
+    marker[15] = "30";
+    marker[16] = "30";
+
+    return join(header) + "\n" + join(marker) + "\n";
+}
+
+std::vector<std::string> readLines(std::string const& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<std::string> out;
+    std::string line;
+    while (std::getline(in, line)) out.push_back(line);
+    return out;
 }
 
 std::string generatedJumpLevel() {
@@ -162,6 +198,64 @@ int main() {
         << "first_failure_tick=" << firstFailureTick
         << " anchor_tick=" << anchorTick
         << " suffix_solved=YES\n";
+
+    // Fixup replay optimization regression: the bounded walk must be exactly
+    // the prefix of the old full walk. It changes only how much unused tail is
+    // simulated, never any physics tick inside the comparison window.
+    {
+        const auto longCsv = generatedLongSafeLevel();
+        {
+            std::ofstream empty("build4-long-empty-plan.txt", std::ios::trunc);
+        }
+        const auto full0 = std::chrono::steady_clock::now();
+        const int fullRc = runDp(
+            {
+                "leveldp", "memory",
+                "--replay", "build4-long-empty-plan.txt",
+                "--out", "build4-fixup-full",
+                "--threads", "1"
+            },
+            longCsv
+        );
+        const double fullMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - full0).count();
+        assert(fullRc == 0);
+        assert(dp::g_outcome.replayDiedT < 0);
+
+        constexpr long long kBoundTicks = 400;
+        const auto bounded0 = std::chrono::steady_clock::now();
+        const int boundedRc = runDp(
+            {
+                "leveldp", "memory",
+                "--replay", "build4-long-empty-plan.txt",
+                "--horizon", std::to_string(kBoundTicks),
+                "--out", "build4-fixup-bounded",
+                "--threads", "1"
+            },
+            longCsv
+        );
+        const double boundedMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - bounded0).count();
+        assert(boundedRc == 0);
+        assert(dp::g_outcome.replayDiedT < 0);
+
+        const auto fullTrace = readLines("build4-fixup-full.trace.csv");
+        const auto boundedTrace = readLines("build4-fixup-bounded.trace.csv");
+        assert(!boundedTrace.empty());
+        assert(fullTrace.size() > boundedTrace.size());
+        assert(boundedTrace.size() == static_cast<std::size_t>(kBoundTicks + 1));
+        for (std::size_t i = 0; i < boundedTrace.size(); ++i)
+            assert(fullTrace[i] == boundedTrace[i]);
+
+        std::cout
+            << "FIXUP_REPLAY_BOUND_TEST=PASS "
+            << "prefix_identical=YES bounded_ticks=" << kBoundTicks
+            << " full_rows=" << fullTrace.size()
+            << " full_ms=" << fullMs
+            << " bounded_ms=" << boundedMs
+            << " speedup=" << (fullMs / std::max(0.001, boundedMs))
+            << "x\n";
+    }
 
     return 0;
 }
