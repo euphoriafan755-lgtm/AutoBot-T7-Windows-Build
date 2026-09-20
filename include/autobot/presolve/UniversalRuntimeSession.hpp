@@ -27,14 +27,37 @@ struct LiveRootAssessment {
     std::string_view reason = "root-reusable";
 };
 
+inline double effectivePhysicsTicksPerSecond(
+    solver::ModeCalibration const& calibration
+) {
+    return std::isfinite(calibration.physicsTicksPerSecond)
+        && calibration.physicsTicksPerSecond > 1.0
+        ? calibration.physicsTicksPerSecond
+        : 60.0;
+}
+
+inline std::size_t physicsTicksElapsed(
+    core::GameSnapshot const& root,
+    core::GameSnapshot const& current,
+    double physicsTicksPerSecond
+) {
+    if (!root.valid || !current.valid || !std::isfinite(physicsTicksPerSecond)
+        || physicsTicksPerSecond <= 0.0) {
+        return 0;
+    }
+    const double elapsed = std::max(0.0, current.levelTime - root.levelTime);
+    const double ticks = elapsed * physicsTicksPerSecond;
+    return static_cast<std::size_t>(std::floor(ticks + 1e-6));
+}
+
 inline LiveRootAssessment assessLiveRoot(
     core::GameSnapshot const& root,
     core::GameSnapshot const& previous,
     core::GameSnapshot const& current,
-    std::size_t framesSinceRoot,
+    std::size_t physicsTicksSinceRoot,
     std::size_t reusablePolicyTicks
 ) {
-    constexpr std::size_t kRollingRootWindowFrames = 24;
+    constexpr std::size_t kRollingRootWindowPhysicsTicks = 24;
 
     if (!root.valid || !previous.valid || !current.valid) {
         return {true, "invalid-live-state"};
@@ -61,10 +84,10 @@ inline LiveRootAssessment assessLiveRoot(
         return {true, "state-discontinuity"};
     }
 
-    if (reusablePolicyTicks > 0 && framesSinceRoot >= reusablePolicyTicks) {
+    if (reusablePolicyTicks > 0 && physicsTicksSinceRoot >= reusablePolicyTicks) {
         return {true, "policy-prefix-consumed"};
     }
-    if (framesSinceRoot >= kRollingRootWindowFrames) {
+    if (physicsTicksSinceRoot >= kRollingRootWindowPhysicsTicks) {
         return {true, "rolling-window-advance"};
     }
     return {};
@@ -120,11 +143,16 @@ public:
     [[nodiscard]] std::size_t liveRerootCount() const { return m_liveRerootCount; }
     [[nodiscard]] bool fullPolicyAvailable() const { return m_fullPolicyAvailable; }
     [[nodiscard]] std::optional<bool> recommendedP1Hold() const {
-        if (m_policy.empty() || m_liveFramesSinceRoot >= m_policy.size()) return std::nullopt;
-        return m_policy[m_liveFramesSinceRoot].p1Hold;
+        if (m_policy.empty() || m_livePhysicsTicksSinceRoot >= m_policy.size()) {
+            return std::nullopt;
+        }
+        return m_policy[m_livePhysicsTicksSinceRoot].p1Hold;
     }
     [[nodiscard]] std::size_t liveFramesObserved() const { return m_liveFramesObserved; }
     [[nodiscard]] std::size_t liveFramesSinceRoot() const { return m_liveFramesSinceRoot; }
+    [[nodiscard]] std::size_t livePhysicsTicksSinceRoot() const {
+        return m_livePhysicsTicksSinceRoot;
+    }
     [[nodiscard]] std::size_t internalGdUpdateCalls() const {
         return m_oracle ? m_oracle->internalGdUpdateCalls() : 0;
     }
@@ -141,6 +169,7 @@ private:
     UniversalRuntimeStage m_stage = UniversalRuntimeStage::Idle;
     std::unique_ptr<ShadowUniversalOracle> m_oracle;
     UniversalSearchCore m_search;
+    solver::PhysicsValidationHarness const* m_validation = nullptr;
 
     core::GameSnapshot m_pendingLiveSnapshot{};
     core::GameSnapshot m_rootLiveSnapshot{};
@@ -149,6 +178,7 @@ private:
     bool m_liveRootDirty = false;
     std::size_t m_liveFramesObserved = 0;
     std::size_t m_liveFramesSinceRoot = 0;
+    std::size_t m_livePhysicsTicksSinceRoot = 0;
 
     std::vector<UniversalAction> m_policy;
     std::size_t m_refinement = 0;
