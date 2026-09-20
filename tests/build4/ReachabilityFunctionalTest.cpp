@@ -257,5 +257,99 @@ int main() {
             << "x\n";
     }
 
+    // Repair-loop A/B: emulate one GD death at t=400 while the model
+    // trajectory itself remains safe. recordFixups may call replay repeatedly,
+    // and every fixupPass only examines rows through the game's death tick.
+    // OLD = full model tail every pass. FIX = exact compared death window.
+    {
+        const auto longCsv = generatedLongSafeLevel();
+        constexpr long long kDeathTick = 400;
+        constexpr int kRepairPasses = 4;
+        struct RepairMeasure {
+            double totalMs = 0.0;
+            double resimMs = 0.0;
+            double fixupPassMs = 0.0;
+            long long simulatedTicks = 0;
+            std::vector<std::string> comparedPrefix;
+        };
+        auto runRepair = [&](bool bounded, const char* tag) {
+            RepairMeasure m;
+            const auto total0 = std::chrono::steady_clock::now();
+            for (int pass = 0; pass < kRepairPasses; ++pass) {
+                const std::string out = std::string("build4-repair-") + tag
+                                      + "-" + std::to_string(pass);
+                std::vector<std::string> args{
+                    "leveldp", "memory",
+                    "--replay", "build4-long-empty-plan.txt",
+                    "--out", out,
+                    "--threads", "1"
+                };
+                if (bounded) {
+                    args.push_back("--horizon");
+                    args.push_back(std::to_string(kDeathTick));
+                }
+
+                const auto resim0 = std::chrono::steady_clock::now();
+                const int rc = runDp(args, longCsv);
+                m.resimMs += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - resim0).count();
+                assert(rc == 0);
+                assert(dp::g_outcome.replayDiedT < 0);
+
+                const auto scan0 = std::chrono::steady_clock::now();
+                const auto rows = readLines(out + ".trace.csv");
+                assert(rows.size() > static_cast<std::size_t>(kDeathTick));
+                if (pass == 0) {
+                    m.comparedPrefix.assign(rows.begin(),
+                        rows.begin() + static_cast<std::ptrdiff_t>(kDeathTick + 1));
+                } else {
+                    for (long long t = 0; t <= kDeathTick; ++t)
+                        assert(rows[static_cast<std::size_t>(t)]
+                               == m.comparedPrefix[static_cast<std::size_t>(t)]);
+                }
+                // This scan is the part fixupPass consumes: only the compared
+                // interval through deathTick. Rows after it are intentionally
+                // ignored, exactly like repair.hpp.
+                volatile std::size_t checksum = 0;
+                for (long long t = 0; t <= kDeathTick; ++t)
+                    checksum += rows[static_cast<std::size_t>(t)].size();
+                (void)checksum;
+                m.fixupPassMs += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - scan0).count();
+                m.simulatedTicks += static_cast<long long>(rows.size()) - 1;
+            }
+            m.totalMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - total0).count();
+            return m;
+        };
+
+        const auto before = runRepair(false, "before");
+        const auto after = runRepair(true, "after");
+        assert(before.comparedPrefix == after.comparedPrefix);
+        assert(before.simulatedTicks > after.simulatedTicks);
+        const long long avoided = before.simulatedTicks - after.simulatedTicks;
+        const double eliminated = before.simulatedTicks > 0
+            ? (100.0 * static_cast<double>(avoided)
+               / static_cast<double>(before.simulatedTicks))
+            : 0.0;
+
+        std::cout
+            << "REPAIR_BOUND_AB_TEST=PASS "
+            << "route_prefix_identical=YES "
+            << "repair_count=" << kRepairPasses
+            << " before_total_ms=" << before.totalMs
+            << " after_total_ms=" << after.totalMs
+            << " before_resim_ms=" << before.resimMs
+            << " after_resim_ms=" << after.resimMs
+            << " before_fixup_pass_ms=" << before.fixupPassMs
+            << " after_fixup_pass_ms=" << after.fixupPassMs
+            << " before_ticks=" << before.simulatedTicks
+            << " after_ticks=" << after.simulatedTicks
+            << " ticks_avoided=" << avoided
+            << " repair_work_eliminated_pct=" << eliminated
+            << " speedup=" << (before.totalMs / std::max(0.001, after.totalMs))
+            << "x\n";
+    }
+
     return 0;
 }
