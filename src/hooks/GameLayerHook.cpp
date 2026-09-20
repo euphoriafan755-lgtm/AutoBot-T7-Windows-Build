@@ -140,6 +140,9 @@ bool g_universalSearchLivenessPassLogged = false;
 bool g_universalSearchLivenessFailLogged = false;
 std::size_t g_universalSearchSliceBudget = 8;
 double g_universalSearchLastSliceMs = 0.0;
+std::uint64_t g_liveSimulationSteps = 0;
+std::uint64_t g_liveRealUpdates = 0;
+bool g_liveRoundTripLogged = false;
 autobot::ui::AutonomousHUD* g_universalHUD = nullptr;
 
 autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
@@ -288,28 +291,24 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
             && static_cast<GJBaseGameLayer*>(owner) == static_cast<GJBaseGameLayer*>(this);
         if (universalOwns) {
             g_universalRuntime.setStepCallback([this, owner](float innerDt) {
-                // This is the only gameplay step permitted while SEARCHING. The outer
-                // scheduled callback never executes a visible/base gameplay frame.
+                // Simulation steps run only inside a captured oracle state and
+                // are restored before the single visible update below.
                 owner->m_isPaused = false;
                 g_universalInternalStep = true;
+                ++g_liveSimulationSteps;
                 GJBaseGameLayer::update(innerDt);
                 g_universalInternalStep = false;
             });
 
             if (g_universalRuntime.searching()) {
-                ++g_authoritativeFreeze.gjBaseUpdateCalls;
-                // Keep the scheduler alive. Visible gameplay is frozen because this outer
-                // callback returns without calling GJBaseGameLayer::update(dt).
                 owner->m_isPaused = false;
                 const auto searchSliceStart = PerfClock::now();
                 {
-                    UniversalRuntimeCallScope runtimeScope("searchSlice");
+                    UniversalRuntimeCallScope runtimeScope("liveSearchSlice");
                     g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
                 }
                 g_universalSearchLastSliceMs = elapsedMs(searchSliceStart);
 
-                // Keep the outer frame responsive while using spare CPU when
-                // oracle expansion is cheap. This budget is level-agnostic.
                 constexpr double kTargetSliceMs = 4.0;
                 constexpr std::size_t kMinSliceBudget = 1;
                 constexpr std::size_t kMaxSliceBudget = 64;
@@ -327,185 +326,79 @@ class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
                     );
                 }
 
-                const auto liveStats = g_universalRuntime.stats();
-                const auto liveness = g_universalSearchLiveness.observe(
-                    liveStats,
-                    captureSearchVisibleState(owner),
-                    elapsedMs(g_universalSearchLivenessStarted) / 1000.0
-                );
-                if (liveness.state == autobot::presolve::SearchLivenessState::Stall) {
-                    const auto beforeTier = liveStats.strategyTier;
-                    const auto beforeRefinement = g_universalRuntime.refinement();
-                    if (!g_universalRuntime.recoverFromStall(liveness.reason)) {
-                        g_universalRuntime.fail(
-                            "E) SEARCH ES DEMASIADO LENTO: STALL RECOVERY EXHAUSTED: " + liveness.reason
-                        );
-                        log::error(
-                            "UNIVERSAL_SEARCH_STALL=FATAL reason={} expansions={} engineSteps={} depth={} "
-                            "frontier={} best={:.3f}% tier={} refinement={}",
-                            liveness.reason, liveStats.totalExpansions, liveStats.totalEngineSteps,
-                            liveStats.currentDepth, liveStats.frontierSize, liveStats.bestProgress,
-                            beforeTier, beforeRefinement
-                        );
-                        if (g_universalHUD) {
-                            g_universalHUD->updatePreRun(
-                                autobot::presolve::PreRunStage::NotReady,
-                                g_universalRuntime.reason(),
-                                false,
-                                liveStats.bestProgress
-                            );
-                        }
-                        return;
-                    }
-
-                    const auto after = g_universalRuntime.stats();
-                    log::warn(
-                        "UNIVERSAL_SEARCH_STALL=RECOVERED reason={} oldTier={} newTier={} oldRefinement={} "
-                        "newRefinement={} expansions={} engineSteps={} best={:.3f}%",
-                        liveness.reason, beforeTier, after.strategyTier, beforeRefinement,
-                        g_universalRuntime.refinement(), after.totalExpansions,
-                        after.totalEngineSteps, after.bestProgress
-                    );
-                    g_universalSearchLiveness.reset(after, captureSearchVisibleState(owner));
-                    g_universalSearchLivenessStarted = PerfClock::now();
-                    return;
-                }
-
-                if (liveness.state == autobot::presolve::SearchLivenessState::Fail) {
-                    if (!g_universalSearchLivenessFailLogged) {
-                        g_universalSearchLivenessFailLogged = true;
-                        log::error(
-                            "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=FAIL reason={} expansions={} engineSteps={} "
-                            "depth={} frontier={} unique={} stagnantFrames={}",
-                            liveness.reason, liveStats.totalExpansions, liveStats.totalEngineSteps,
-                            liveStats.currentDepth, liveStats.frontierSize,
-                            liveStats.uniqueStates, liveness.stagnantFrames
-                        );
-                    }
-                    g_universalRuntime.fail("A) SEARCH DRIVER NO CORRE: " + liveness.reason);
-                    if (g_universalHUD) {
-                        g_universalHUD->updatePreRun(
-                            autobot::presolve::PreRunStage::NotReady,
-                            g_universalRuntime.reason(),
-                            false,
-                            liveStats.bestProgress
-                        );
-                    }
-                    return;
-                }
-                if (liveness.state == autobot::presolve::SearchLivenessState::Pass
-                    && !g_universalSearchLivenessPassLogged) {
-                    g_universalSearchLivenessPassLogged = true;
+                const auto stats = g_universalRuntime.stats();
+                const auto validation = g_universalRuntime.validation();
+                if (!g_liveRoundTripLogged && validation.liveRoundTripChecks > 0) {
+                    g_liveRoundTripLogged = true;
                     log::info(
-                        "UNIVERSAL_SEARCH_RUNTIME_LIVENESS=PASS expansions={} depth={} frontier={} unique={} "
-                        "best={:.3f}% playerXDelta=0 levelTimeDelta=0 progressDelta=0 attemptsDelta=0",
-                        liveStats.totalExpansions, liveStats.currentDepth, liveStats.frontierSize,
-                        liveStats.uniqueStates, liveStats.bestProgress
+                        "LIVE_SEARCH_ROUNDTRIP_RUNTIME={} checks={} rng={} effects={} dynamic={} "
+                        "queued={} attempts={} pause={}",
+                        validation.roundTripPass ? "PASS" : "FAIL",
+                        validation.liveRoundTripChecks,
+                        validation.rngPass ? "PASS" : "FAIL",
+                        validation.effectStatePass ? "PASS" : "FAIL",
+                        validation.dynamicWorldPass ? "PASS" : "FAIL",
+                        validation.queuedStatePass ? "PASS" : "FAIL",
+                        validation.attemptStatePass ? "PASS" : "FAIL",
+                        validation.pauseStatePass ? "PASS" : "FAIL"
                     );
                 }
 
-                verifyAuthoritativeFreezeRuntime(owner);
                 if (g_universalHUD) {
-                    const auto stats = g_universalRuntime.stats();
                     g_universalHUD->updatePreRun(
                         autobot::presolve::PreRunStage::Searching,
                         fmt::format(
-                            "SEARCH t={:.1f}s eps={:.0f} exp={} steps={} depth={} frontier={} best={:.2f}% "
-                            "tier={} macro={} refine={} budget={} slice={:.2f}ms mem={:.1f}MiB ETA={}",
+                            "LIVE SEARCH t={:.1f}s eps={:.0f} exp={} steps={} frontier={} best={:.2f}% "
+                            "reroots={} budget={} slice={:.2f}ms",
                             stats.elapsedSeconds,
                             stats.expansionsPerSecond,
                             stats.totalExpansions,
                             stats.totalEngineSteps,
-                            stats.currentDepth,
                             stats.frontierSize,
                             stats.bestProgress,
-                            stats.strategyTier,
-                            stats.currentMacroTicks,
-                            g_universalRuntime.refinement(),
+                            g_universalRuntime.liveRerootCount(),
                             g_universalSearchSliceBudget,
-                            g_universalSearchLastSliceMs,
-                            static_cast<double>(stats.estimatedMemoryBytes) / (1024.0 * 1024.0),
-                            stats.etaSeconds >= 0.0
-                                ? fmt::format("{:.1f}s", stats.etaSeconds)
-                                : std::string("n/a")
+                            g_universalSearchLastSliceMs
                         ),
-                        false,
+                        g_universalRuntime.fullPolicyAvailable(),
                         stats.bestProgress
                     );
                 }
-                if (g_universalRuntime.ready()) {
-                    releaseAuthoritativeFreeze(owner);
-                    if (g_universalHUD) {
-                        g_universalHUD->updatePreRun(
-                            autobot::presolve::PreRunStage::Ready,
-                            fmt::format("ENGINE POLICY VERIFIED ticks={}", g_universalRuntime.policySize()),
-                            true,
-                            100.0
-                        );
-                    }
-                    log::info(
-                        "UNIVERSAL_ENGINE_REPLAY=PASS policyTicks={} dt={:.9f} refinement={}",
-                        g_universalRuntime.policySize(),
-                        g_universalRuntime.stepDt(),
-                        g_universalRuntime.refinement()
-                    );
-                    logUniversalRuntimeValidation();
-                }
-                return;
-            }
-
-            if (g_universalRuntime.ready() || g_universalRuntime.playing()) {
-                releaseAuthoritativeFreeze(owner);
-                const auto recoveriesBefore = g_universalRuntime.recoveryCount();
-                {
-                    UniversalRuntimeCallScope runtimeScope("playbackFrame");
-                    g_universalRuntime.playbackFrame(static_cast<double>(dt));
-                }
-                if (g_universalRuntime.searching() && g_universalRuntime.recoveryCount() > recoveriesBefore) {
-                    activateAuthoritativeFreeze(owner);
-                    log::warn(
-                        "UNIVERSAL_DESYNC_RECOVERY=REPLAN recoveryCount={} reason={}",
-                        g_universalRuntime.recoveryCount(),
-                        g_universalRuntime.reason()
-                    );
-                }
-                if (g_universalRuntime.error()) {
-                    activateAuthoritativeFreeze(owner);
-                    if (g_universalHUD) {
-                        g_universalHUD->updatePreRun(
-                            autobot::presolve::PreRunStage::NotReady,
-                            g_universalRuntime.reason(),
-                            false,
-                            g_universalRuntime.stats().bestProgress
-                        );
-                    }
-                    log::error("UNIVERSAL_RUNTIME_PLAYBACK=FAIL reason={}", g_universalRuntime.reason());
-                }
-                return;
             }
 
             if (g_universalRuntime.error()) {
-                ++g_authoritativeFreeze.gjBaseUpdateCalls;
-                owner->m_isPaused = true;
-                verifyAuthoritativeFreezeRuntime(owner);
-                return;
+                log::error(
+                    "LIVE_GLOBAL_SEARCH=ERROR generation={} reason={} action=CONTINUE_WITH_LOCAL_MPC",
+                    g_universalRuntime.generation(),
+                    g_universalRuntime.reason()
+                );
             }
 
-            if (g_universalRuntime.complete()) {
-                GJBaseGameLayer::update(dt);
-                return;
+            // Exactly one visible gameplay update per outer scheduler callback.
+            // The search may have executed many reversible simulation steps,
+            // but they were restored before this point.
+            owner->m_isPaused = false;
+            ++g_liveRealUpdates;
+            if (g_liveRealUpdates <= 8 || (g_liveRealUpdates % 120U) == 0U) {
+                const auto stats = g_universalRuntime.stats();
+                log::info(
+                    "LIVE_SOLVER_FRAME generation={} realUpdates={} simulationSteps={} levelTime={:.6f} "
+                    "progress={:.3f}% searchElapsed={:.3f}s expansions={} engineSteps={} frontier={}",
+                    g_universalRuntime.generation(),
+                    g_liveRealUpdates,
+                    g_liveSimulationSteps,
+                    owner->m_gameState.m_levelTime,
+                    owner->getCurrentPercent(),
+                    stats.elapsedSeconds,
+                    stats.totalExpansions,
+                    stats.totalEngineSteps,
+                    stats.frontierSize
+                );
             }
-        }
-
-        if (authoritativeFreezeOwns(this)) {
-            ++g_authoritativeFreeze.gjBaseUpdateCalls;
-            auto* playLayer = g_authoritativeFreeze.owner;
-            if (playLayer) {
-                playLayer->m_isPaused = true;
-                verifyAuthoritativeFreezeRuntime(playLayer);
-            }
+            GJBaseGameLayer::update(dt);
             return;
         }
+
         GJBaseGameLayer::update(dt);
     }
 };
