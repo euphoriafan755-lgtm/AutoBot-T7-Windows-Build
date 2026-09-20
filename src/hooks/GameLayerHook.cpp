@@ -1011,6 +1011,18 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->inputController.botHoldingP2()
         );
 
+        if (g_universalRuntime.owner() == this) {
+            const auto liveSearch = g_universalRuntime.stats();
+            decision.liveSearchElapsed = liveSearch.elapsedSeconds;
+            decision.liveSearchExpansionsPerSecond = liveSearch.expansionsPerSecond;
+            decision.liveSearchExpansions = liveSearch.totalExpansions;
+            decision.liveSearchEngineSteps = liveSearch.totalEngineSteps;
+            decision.liveSearchFrontier = liveSearch.frontierSize;
+            decision.liveSearchReroots = g_universalRuntime.liveRerootCount();
+            decision.liveSearchBestProgress = liveSearch.bestProgress;
+            decision.liveGlobalPolicyAvailable = g_universalRuntime.fullPolicyAvailable();
+        }
+
         if (decision.countdown.active || decision.countdown.fired) {
             log::info(
                 "ACTION_COUNTDOWN sample={} label={} dueIn={} targetSample={} fired={} action={}",
