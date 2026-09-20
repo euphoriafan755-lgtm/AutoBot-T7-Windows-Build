@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -115,7 +116,14 @@ public:
         world::CollisionQueryResult const& query,
         bool enabled,
         bool botHolding,
-        bool botHoldingP2 = false
+        bool botHoldingP2 = false,
+        std::optional<bool> globalDesiredHold = std::nullopt
+    );
+
+    static bool applyGlobalPolicyGuidance(
+        solver::PlanDecision& plan,
+        bool globalDesiredHold,
+        bool botHolding
     );
 
     bool configureWorld(
