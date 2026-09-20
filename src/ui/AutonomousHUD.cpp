@@ -94,10 +94,9 @@ void AutonomousHUD::update(
 
     std::string text = fmt::format(
         "AutoBot T7 v{} | Build {} | {}\n"
-        "PRE-RUN: {}\n"
-        "PRE-RUN REASON: {}\n"
-        "FULL POLICY REPLAY: {}\n"
-        "SIMULATED COMPLETION: {:.1f}%\n"
+        "LIVE SOLVER: MPC + ROLLING SEARCH\n"
+        "SEARCH: t={:.2f}s eps={:.0f} exp={} steps={} frontier={} best={:.2f}% reroots={}\n"
+        "GLOBAL FULL POLICY: {}\n"
         "AUTOBOT: {}\n"
         "CONTROL: {}\n"
         "MODE: {}\n"
@@ -115,10 +114,14 @@ void AutonomousHUD::update(
         core::build::version(),
         core::build::shortCommit(),
         core::build::buildDate(),
-        presolve::toString(decision.preRunStage),
-        decision.preRunReason,
-        decision.fullPolicyReplayPassed ? "PASS" : "NOT PASSED",
-        decision.simulatedCompletion,
+        decision.liveSearchElapsed,
+        decision.liveSearchExpansionsPerSecond,
+        decision.liveSearchExpansions,
+        decision.liveSearchEngineSteps,
+        decision.liveSearchFrontier,
+        decision.liveSearchBestProgress,
+        decision.liveSearchReroots,
+        decision.liveGlobalPolicyAvailable ? "AVAILABLE" : "SEARCHING",
         decision.active ? "ACTIVE" : "STOPPED",
         control::toString(decision.ownership),
         mode,
@@ -205,17 +208,17 @@ void AutonomousHUD::updatePreRun(
     if (!m_label) return;
     const auto text = fmt::format(
         "AutoBot T7 v{} | Build {} | {}\n"
-        "PRE-RUN: {}\n"
+        "LIVE SEARCH: {}\n"
         "REASON: {}\n"
-        "FULL POLICY REPLAY: {}\n"
-        "SIMULATED COMPLETION: {:.1f}%\n"
-        "AUTOBOT: FROZEN UNTIL READY",
+        "GLOBAL FULL POLICY: {}\n"
+        "GLOBAL BEST: {:.1f}%\n"
+        "AUTOBOT: PLAYING WHILE PLANNING",
         core::build::version(),
         core::build::shortCommit(),
         core::build::buildDate(),
         presolve::toString(stage),
         reason.empty() ? "WORKING" : reason,
-        replayPassed ? "PASS" : "NOT PASSED",
+        replayPassed ? "AVAILABLE" : "SEARCHING",
         simulatedCompletion
     );
     m_label->setString(text.c_str());
