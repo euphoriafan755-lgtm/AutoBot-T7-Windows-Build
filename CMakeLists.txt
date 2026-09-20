@@ -330,7 +330,435 @@ if(_autobot_fixup_args_pos EQUAL -1)
 endif()
 string(REPLACE "${_autobot_fixup_args_old}" "${_autobot_fixup_args_new}"
     _autobot_repair_text "${_autobot_repair_text}")
+
+# End-to-end runtime profiling. All fields are observational only: they are
+# written to result.txt and never consulted by solver/repair decisions.
+set(_autobot_perf_insert_old "constexpr const char* kThreads = \"8\";")
+set(_autobot_perf_insert_new [=[
+constexpr const char* kThreads = "8";
+
+struct RuntimePerf {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point totalStart{}, verifyStart{}, finalPrepStart{};
+    bool totalActive = false, verifyActive = false, finalPrepActive = false;
+    bool reported = false;
+
+    double modelBuildSeconds = 0.0;
+    double initialSearchSeconds = 0.0;
+    double candidateReplaySeconds = 0.0;
+    double realGdVerificationSeconds = 0.0;
+    double deathDivergenceSeconds = 0.0;
+    double recordFixupsSeconds = 0.0;
+    double fixupResimulationSeconds = 0.0;
+    double fixupPassSeconds = 0.0;       // matching/scan only, excludes resim
+    double reanchorSeconds = 0.0;
+    double suffixSearchSeconds = 0.0;
+    double rejoinSeconds = 0.0;
+    double finalReplayPrepSeconds = 0.0;
+
+    long long statesExpanded = 0;
+    long long dedupHits = 0;
+    long long capHits = 0;
+    long long statesDroppedByCap = 0;
+    long long peakAliveStates = 0;
+    unsigned long long peakMemoryBytes = 0;
+
+    long long verificationAttempts = 0;
+    long long repairCount = 0;
+    long long reanchors = 0;
+    long long rejoins = 0;
+    long long totalSimulatedPhysicsTicks = 0;
+    long long wastedTicksAvoided = 0;
+};
+
+inline RuntimePerf g_perf;
+
+struct PerfScope {
+    double* dst;
+    RuntimePerf::Clock::time_point start;
+    explicit PerfScope(double& d) : dst(&d), start(RuntimePerf::Clock::now()) {}
+    ~PerfScope() {
+        *dst += std::chrono::duration<double>(RuntimePerf::Clock::now() - start).count();
+    }
+};
+
+struct PerfExclusiveScope {
+    double* dst;
+    double* nested;
+    double nestedStart;
+    RuntimePerf::Clock::time_point start;
+    PerfExclusiveScope(double& d, double& n)
+        : dst(&d), nested(&n), nestedStart(n), start(RuntimePerf::Clock::now()) {}
+    ~PerfExclusiveScope() {
+        const double total = std::chrono::duration<double>(
+            RuntimePerf::Clock::now() - start).count();
+        const double nestedDelta = *nested - nestedStart;
+        *dst += std::max(0.0, total - nestedDelta);
+    }
+};
+
+inline void perfReset() {
+    g_perf = RuntimePerf{};
+    g_perf.totalStart = RuntimePerf::Clock::now();
+    g_perf.totalActive = true;
+}
+
+inline void perfAbsorbSearch(const dpbridge::SolveOutcome& o) {
+    g_perf.statesExpanded += o.statesExpanded;
+    g_perf.dedupHits += o.dedupHits;
+    if (o.capHits > 0) g_perf.capHits += o.capHits;
+    g_perf.statesDroppedByCap += o.statesDroppedByCap;
+    g_perf.peakAliveStates = std::max(g_perf.peakAliveStates, o.peakAliveStates);
+    g_perf.peakMemoryBytes = std::max(g_perf.peakMemoryBytes, o.peakMemoryBytes);
+    g_perf.candidateReplaySeconds += o.candidateReplaySeconds;
+    g_perf.rejoinSeconds += o.rejoinSeconds;
+    g_perf.totalSimulatedPhysicsTicks += o.searchSimulatedPhysicsTicks
+                                      + o.candidateReplayTicks;
+    if (o.rejoinT >= 0) ++g_perf.rejoins;
+}
+
+inline void perfBeginVerification() {
+    g_perf.verifyStart = RuntimePerf::Clock::now();
+    g_perf.verifyActive = true;
+    ++g_perf.verificationAttempts;
+}
+
+inline void perfEndVerification(long long physicsTicks) {
+    if (!g_perf.verifyActive) return;
+    g_perf.realGdVerificationSeconds += std::chrono::duration<double>(
+        RuntimePerf::Clock::now() - g_perf.verifyStart).count();
+    g_perf.totalSimulatedPhysicsTicks += std::max<long long>(0, physicsTicks);
+    g_perf.verifyActive = false;
+}
+
+inline void perfFinalPrepBegin() {
+    g_perf.finalPrepStart = RuntimePerf::Clock::now();
+    g_perf.finalPrepActive = true;
+}
+
+inline void perfFinalPrepEnd() {
+    if (!g_perf.finalPrepActive) return;
+    g_perf.finalReplayPrepSeconds += std::chrono::duration<double>(
+        RuntimePerf::Clock::now() - g_perf.finalPrepStart).count();
+    g_perf.finalPrepActive = false;
+}
+
+inline void perfReport(const char* result) {
+    if (g_perf.reported || !g_perf.totalActive) return;
+    if (g_perf.finalPrepActive) perfFinalPrepEnd();
+    const double total = std::chrono::duration<double>(
+        RuntimePerf::Clock::now() - g_perf.totalStart).count();
+    const double exclusiveSearch = std::max(
+        1e-9,
+        g_perf.initialSearchSeconds + g_perf.suffixSearchSeconds
+            - g_perf.candidateReplaySeconds);
+    const double statesPerSecond =
+        static_cast<double>(g_perf.statesExpanded) / exclusiveSearch;
+
+    char a[1024];
+    std::snprintf(
+        a, sizeof(a),
+        "SOLVE_PROFILE result=%s MODEL_BUILD=%.6f INITIAL_SEARCH=%.6f "
+        "CANDIDATE_REPLAY=%.6f REAL_GD_VERIFICATION=%.6f "
+        "DEATH_DIVERGENCE_DETECTION=%.6f RECORD_FIXUPS=%.6f "
+        "FIXUP_RESIMULATION=%.6f FIXUP_PASS=%.6f REANCHOR=%.6f "
+        "SUFFIX_SEARCH=%.6f REJOIN=%.6f FINAL_REPLAY_PREP=%.6f TOTAL_SOLVE=%.6f",
+        result,
+        g_perf.modelBuildSeconds,
+        g_perf.initialSearchSeconds,
+        g_perf.candidateReplaySeconds,
+        g_perf.realGdVerificationSeconds,
+        g_perf.deathDivergenceSeconds,
+        g_perf.recordFixupsSeconds,
+        g_perf.fixupResimulationSeconds,
+        g_perf.fixupPassSeconds,
+        g_perf.reanchorSeconds,
+        g_perf.suffixSearchSeconds,
+        g_perf.rejoinSeconds,
+        g_perf.finalReplayPrepSeconds,
+        total);
+    writeResult(a);
+
+    char b[1024];
+    std::snprintf(
+        b, sizeof(b),
+        "SOLVE_COUNTERS statesExpanded=%lld statesPerSecond=%.3f dedupHits=%lld "
+        "capHits=%lld statesDroppedByCap=%lld peakAliveStates=%lld "
+        "peakMemoryBytes=%llu peakMemoryScope=solver_estimate "
+        "verificationAttempts=%lld repairCount=%lld reanchors=%lld rejoins=%lld "
+        "totalSimulatedPhysicsTicks=%lld wastedTicksAvoided=%lld",
+        g_perf.statesExpanded,
+        statesPerSecond,
+        g_perf.dedupHits,
+        g_perf.capHits,
+        g_perf.statesDroppedByCap,
+        g_perf.peakAliveStates,
+        g_perf.peakMemoryBytes,
+        g_perf.verificationAttempts,
+        g_perf.repairCount,
+        g_perf.reanchors,
+        g_perf.rejoins,
+        g_perf.totalSimulatedPhysicsTicks,
+        g_perf.wastedTicksAvoided);
+    writeResult(b);
+    g_perf.reported = true;
+}
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_perf_insert_old}" _autobot_perf_insert_pos)
+if(_autobot_perf_insert_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver runtime perf insertion anchor not found")
+endif()
+string(REPLACE "${_autobot_perf_insert_old}" "${_autobot_perf_insert_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_fixup_entry_old [=[
+inline int fixupPass(long long t0, const std::string& startArgStr, const std::string& band,
+                     long long deathTick) {
+]=])
+set(_autobot_fixup_entry_new [=[
+inline int fixupPass(long long t0, const std::string& startArgStr, const std::string& band,
+                     long long deathTick) {
+    PerfExclusiveScope perfFixupPass(g_perf.fixupPassSeconds,
+                                     g_perf.fixupResimulationSeconds);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_fixup_entry_old}" _autobot_fixup_entry_pos)
+if(_autobot_fixup_entry_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver fixup timing entry anchor not found")
+endif()
+string(REPLACE "${_autobot_fixup_entry_old}" "${_autobot_fixup_entry_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_fixup_solve_old [=[
+    logSolverArgs(a);
+    dpbridge::solveInProcess(g_csv, a);
+    if (rotQ) logRotSeedRead(t0, "resim");
+    const long long modelDied = dpbridge::outcome().replayDiedT;
+]=])
+set(_autobot_fixup_solve_new [=[
+    logSolverArgs(a);
+    const auto perfResim0 = RuntimePerf::Clock::now();
+    dpbridge::solveInProcess(g_csv, a);
+    g_perf.fixupResimulationSeconds += std::chrono::duration<double>(
+        RuntimePerf::Clock::now() - perfResim0).count();
+    const dpbridge::SolveOutcome perfReplayOutcome = dpbridge::outcome();
+    g_perf.totalSimulatedPhysicsTicks += perfReplayOutcome.replayTicks;
+    g_perf.wastedTicksAvoided += std::max<long long>(
+        0, perfReplayOutcome.replayPotentialTicks - perfReplayOutcome.replayTicks);
+    if (rotQ) logRotSeedRead(t0, "resim");
+    const long long modelDied = perfReplayOutcome.replayDiedT;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_fixup_solve_old}" _autobot_fixup_solve_pos)
+if(_autobot_fixup_solve_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver fixup resim timing anchor not found")
+endif()
+string(REPLACE "${_autobot_fixup_solve_old}" "${_autobot_fixup_solve_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_record_fixups_old [=[
+inline void recordFixups(long long deathTick) {
+    if (!g_cfg.dpFixups || deathTick < 2 || g_fixupCount >= kFixupCap) return;
+]=])
+set(_autobot_record_fixups_new [=[
+inline void recordFixups(long long deathTick) {
+    if (!g_cfg.dpFixups || deathTick < 2 || g_fixupCount >= kFixupCap) return;
+    PerfScope perfRecordFixups(g_perf.recordFixupsSeconds);
+    ++g_perf.repairCount;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_record_fixups_old}" _autobot_record_fixups_pos)
+if(_autobot_record_fixups_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver recordFixups timing anchor not found")
+endif()
+string(REPLACE "${_autobot_record_fixups_old}" "${_autobot_record_fixups_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_reanchor_old "        const int held = heldBefore(g_plan, t0);")
+set(_autobot_reanchor_new [=[
+        const auto perfReanchor0 = RuntimePerf::Clock::now();
+        const int held = heldBefore(g_plan, t0);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_reanchor_old}" _autobot_reanchor_pos)
+if(_autobot_reanchor_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver reanchor timing anchor not found")
+endif()
+string(REPLACE "${_autobot_reanchor_old}" "${_autobot_reanchor_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_suffix_solve_old [=[
+        logSolverArgs(a);
+        const int rc = dpbridge::solveInProcess(g_csv, a);
+        if (rotQ) logRotSeedRead(t0, "anchor");
+]=])
+set(_autobot_suffix_solve_new [=[
+        logSolverArgs(a);
+        g_perf.reanchorSeconds += std::chrono::duration<double>(
+            RuntimePerf::Clock::now() - perfReanchor0).count();
+        ++g_perf.reanchors;
+        const auto perfSuffix0 = RuntimePerf::Clock::now();
+        const int rc = dpbridge::solveInProcess(g_csv, a);
+        g_perf.suffixSearchSeconds += std::chrono::duration<double>(
+            RuntimePerf::Clock::now() - perfSuffix0).count();
+        if (rotQ) logRotSeedRead(t0, "anchor");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_suffix_solve_old}" _autobot_suffix_solve_pos)
+if(_autobot_suffix_solve_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver suffix search timing anchor not found")
+endif()
+string(REPLACE "${_autobot_suffix_solve_old}" "${_autobot_suffix_solve_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_suffix_outcome_old [=[
+        const dpbridge::SolveOutcome o = dpbridge::outcome();
+]=])
+set(_autobot_suffix_outcome_new [=[
+        const dpbridge::SolveOutcome o = dpbridge::outcome();
+        perfAbsorbSearch(o);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_suffix_outcome_old}" _autobot_suffix_outcome_pos)
+if(_autobot_suffix_outcome_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver suffix outcome timing anchor not found")
+endif()
+string(REPLACE "${_autobot_suffix_outcome_old}" "${_autobot_suffix_outcome_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_initial_solve_old [=[
+                    g_rc = dpbridge::solveInProcess(g_csv, a0);
+                    if (dpbridge::outcome().verdict != dpbridge::OutcomeCancelled) break;
+]=])
+set(_autobot_initial_solve_new [=[
+                    const auto perfInitial0 = RuntimePerf::Clock::now();
+                    g_rc = dpbridge::solveInProcess(g_csv, a0);
+                    g_perf.initialSearchSeconds += std::chrono::duration<double>(
+                        RuntimePerf::Clock::now() - perfInitial0).count();
+                    const dpbridge::SolveOutcome perfInitialOutcome = dpbridge::outcome();
+                    perfAbsorbSearch(perfInitialOutcome);
+                    if (perfInitialOutcome.verdict != dpbridge::OutcomeCancelled) break;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_initial_solve_old}" _autobot_initial_solve_pos)
+if(_autobot_initial_solve_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver initial search timing anchor not found")
+endif()
+string(REPLACE "${_autobot_initial_solve_old}" "${_autobot_initial_solve_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_model_start_old [=[
+    g_pendingLayer = nullptr;
+    std::ostringstream oss;
+]=])
+set(_autobot_model_start_new [=[
+    g_pendingLayer = nullptr;
+    perfReset();
+    const auto perfModelBuild0 = RuntimePerf::Clock::now();
+    std::ostringstream oss;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_model_start_old}" _autobot_model_start_pos)
+if(_autobot_model_start_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver model-build timing start anchor not found")
+endif()
+string(REPLACE "${_autobot_model_start_old}" "${_autobot_model_start_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_model_end_old [=[
+    rotSeedLevelReset();       // ...and cfg dprotseed's queue order and witnesses
+]=])
+set(_autobot_model_end_new [=[
+    rotSeedLevelReset();       // ...and cfg dprotseed's queue order and witnesses
+    g_perf.modelBuildSeconds += std::chrono::duration<double>(
+        RuntimePerf::Clock::now() - perfModelBuild0).count();
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_model_end_old}" _autobot_model_end_pos)
+if(_autobot_model_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver model-build timing end anchor not found")
+endif()
+string(REPLACE "${_autobot_model_end_old}" "${_autobot_model_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_death_start_old [=[
+    // A VOID attempt: a death in the first moments of a run that recorded (nearly)
+]=])
+set(_autobot_death_start_new [=[
+    perfEndVerification(dt);
+    PerfScope perfDeathDivergence(g_perf.deathDivergenceSeconds);
+    // A VOID attempt: a death in the first moments of a run that recorded (nearly)
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_death_start_old}" _autobot_death_start_pos)
+if(_autobot_death_start_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver death timing anchor not found")
+endif()
+string(REPLACE "${_autobot_death_start_old}" "${_autobot_death_start_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_verify_begin_old [=[
+    g_cfg.inputs = g_plan;
+    g_paused = false;
+    // The screen stays off here.
+]=])
+set(_autobot_verify_begin_new [=[
+    g_cfg.inputs = g_plan;
+    g_paused = false;
+    perfBeginVerification();
+    // The screen stays off here.
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_verify_begin_old}" _autobot_verify_begin_pos)
+if(_autobot_verify_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver verification timing anchor not found")
+endif()
+string(REPLACE "${_autobot_verify_begin_old}" "${_autobot_verify_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_giveup_old [=[
+    g_paused = true;
+    endSession(sessionWhy);
+]=])
+set(_autobot_giveup_new [=[
+    g_paused = true;
+    perfReport("INCOMPLETE");
+    endSession(sessionWhy);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_giveup_old}" _autobot_giveup_pos)
+if(_autobot_giveup_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver giveUp profile anchor not found")
+endif()
+string(REPLACE "${_autobot_giveup_old}" "${_autobot_giveup_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
 file(WRITE "${_autobot_repair}" "${_autobot_repair_text}")
+
+set(_autobot_play_hooks "${AUTOBOT_GDSOLVER_ROOT}/src/mod/hooks_playlayer.cpp")
+file(READ "${_autobot_play_hooks}" _autobot_play_hooks_text)
+set(_autobot_final_prep_start_old [=[
+            if (g_cfg.dpSolve && !g_dpShowSolution && !g_cfg.inputs.empty()) {
+]=])
+set(_autobot_final_prep_start_new [=[
+            if (g_cfg.dpSolve && !g_dpShowSolution)
+                dpsolve::perfEndVerification(g_tick);
+            if (g_cfg.dpSolve && !g_dpShowSolution)
+                dpsolve::perfFinalPrepBegin();
+            if (g_cfg.dpSolve && !g_dpShowSolution && !g_cfg.inputs.empty()) {
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_final_prep_start_old}" _autobot_final_prep_start_pos)
+if(_autobot_final_prep_start_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver final prep timing start anchor not found")
+endif()
+string(REPLACE "${_autobot_final_prep_start_old}" "${_autobot_final_prep_start_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
+set(_autobot_final_prep_end_old [=[
+            if (g_cfg.dpSolve && dpsolve::onCleared()) return;
+]=])
+set(_autobot_final_prep_end_new [=[
+            if (g_cfg.dpSolve && !g_dpShowSolution) {
+                dpsolve::perfFinalPrepEnd();
+                dpsolve::perfReport("SOLVED");
+            }
+            if (g_cfg.dpSolve && dpsolve::onCleared()) return;
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_final_prep_end_old}" _autobot_final_prep_end_pos)
+if(_autobot_final_prep_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver final prep timing end anchor not found")
+endif()
+string(REPLACE "${_autobot_final_prep_end_old}" "${_autobot_final_prep_end_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+file(WRITE "${_autobot_play_hooks}" "${_autobot_play_hooks_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.
