@@ -152,6 +152,7 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle, std::string_view 
     m_strategyTier = 0;
     m_stallRecoveries = 0;
     m_bestProgress = 0.0;
+    m_bestComplete = false;
     m_rootProgress = 0.0;
     m_startedAt = {};
 
@@ -298,7 +299,7 @@ void UniversalSearchCore::prioritizeFrontier() {
         }
         const auto da = a.metaIndex < m_meta.size() ? m_meta[a.metaIndex].depth : 0;
         const auto db = b.metaIndex < m_meta.size() ? m_meta[b.metaIndex].depth : 0;
-        return da < db;
+        return da > db;
     };
 
     if (m_frontier.size() > 1) {
@@ -470,7 +471,6 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
             const auto observation = advanced.observation;
             if (!observation.valid || observation.dead || advanced.ticks == 0) continue;
 
-            m_bestProgress = std::max(m_bestProgress, observation.progress);
             const auto childDepth = parentDepth + advanced.ticks;
             m_currentDepth = std::max(m_currentDepth, childDepth);
 
@@ -495,8 +495,23 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
 
             const auto childMeta = m_meta.size();
             m_meta.push_back({entry.metaIndex, action, childDepth, advanced.ticks});
-            if (observation.progress >= m_bestProgress - 1e-9) {
+
+            const auto bestDepth = m_bestMetaIndex < m_meta.size()
+                ? m_meta[m_bestMetaIndex].depth
+                : 0;
+            if (betterPartialSolution(
+                    observation.complete,
+                    observation.progress,
+                    childDepth,
+                    m_bestComplete,
+                    m_bestProgress,
+                    bestDepth
+                )) {
                 m_bestMetaIndex = childMeta;
+                m_bestComplete = observation.complete;
+                m_bestProgress = observation.progress;
+            } else {
+                m_bestProgress = std::max(m_bestProgress, observation.progress);
             }
 
             if (observation.complete) {
