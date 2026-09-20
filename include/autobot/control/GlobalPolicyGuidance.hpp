@@ -62,7 +62,10 @@ inline bool applyGlobalPolicyGuidance(
 
     for (std::size_t i = 0; i < plan.trajectories.size(); ++i) {
         auto const& trajectory = plan.trajectories[i];
-        if (trajectory.fatalCollision) continue;
+        // Global guidance may only choose a branch the local MPC has already
+        // proved immediately executable. It must never revive a false-safe
+        // horizon or override a local fatality veto.
+        if (trajectory.fatalCollision || !trajectory.horizonConclusive) continue;
 
         const bool wantHold = trajectory.candidate.desiredHoldAt(0);
         const InputAction candidateAction = wantHold
