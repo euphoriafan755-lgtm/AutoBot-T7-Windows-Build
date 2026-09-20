@@ -3,6 +3,7 @@
 #include <Geode/Geode.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 using namespace geode::prelude;
