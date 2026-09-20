@@ -5,51 +5,75 @@
   },
   "id": "thiago7tv.autobot-t7",
   "name": "AutoBot T7",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "developer": "Thiago7TV",
-  "description": "AutoBot T7 V0.1: general realtime solver with runtime CollisionWorld, per-mode physics, MPC replanning and trajectory visualization.",
+  "description": "Cold reachability solver with real Geometry Dash verification, repair/re-anchor, and deterministic physics-tick input replay.",
   "settings": {
-    "collision-debug-overlay": {
-      "type": "bool",
-      "name": "Collision Debug Overlay",
-      "description": "Shows Collision World object bounds and query metrics. Exact gameplay hitboxes remain NOT VERIFIED.",
-      "default": true
+    "key-overlay": {
+      "type": "keybind",
+      "name": "Hide the overlay",
+      "description": "Refused while solving; the bot status remains visible.",
+      "default": "F1"
     },
-    "collision-trace-debug": {
-      "type": "bool",
-      "name": "Collision Trace Debug",
-      "description": "Expensive diagnostic mode. Traces nearby objects from StaticWorld through primitive creation, SpatialHash, query and renderer, and runs periodic invariants/parse stability checks.",
-      "default": false
+    "key-pause": {
+      "type": "keybind",
+      "name": "Pause / resume",
+      "default": "F2"
     },
-    "collision-object-labels": {
-      "type": "bool",
-      "name": "Collision Object Labels",
-      "description": "When Collision Trace Debug is enabled, labels nearby objects with source index, object ID, raw GameObjectType and final classification.",
-      "default": false
+    "key-step1": {
+      "type": "keybind",
+      "name": "Step one substep",
+      "default": "F3"
     },
-    "collision-debug-full-world": {
-      "type": "bool",
-      "name": "Collision Debug Draw Mode - FULL WORLD",
-      "description": "Diagnostic only. OFF = QUERY ONLY. ON = draw CollisionWorld objects visible by the camera using a brute-force camera-region scan, independent of SpatialHash/queryRegion.",
-      "default": false
+    "key-step10": {
+      "type": "keybind",
+      "name": "Step ten substeps",
+      "default": "F4"
     },
-    "autobot-enabled": {
-      "type": "bool",
-      "name": "AutoBot Enabled",
-      "description": "Enables the realtime General Solver. Input is emitted only after game state, world, mode physics and planner readiness gates are all satisfied.",
-      "default": true
+    "key-render": {
+      "type": "keybind",
+      "name": "Rendering on / off",
+      "default": "F5"
     },
-    "show-trajectory": {
-      "type": "bool",
-      "name": "Show Trajectory",
-      "description": "Draws candidate trajectories and the selected path directly from the same TrajectorySimulator results consumed by the planner.",
-      "default": true
+    "key-hitboxes": {
+      "type": "keybind",
+      "name": "Hitboxes: off / on / only",
+      "default": "F6"
     },
-    "solver-debug": {
-      "type": "bool",
-      "name": "Solver Debug",
-      "description": "Shows detailed solver scores, predictions, model error and planner timing without changing solver decisions.",
-      "default": false
+    "key-replay": {
+      "type": "keybind",
+      "name": "Replay from the start",
+      "default": "F7"
+    },
+    "key-quit": {
+      "type": "keybind",
+      "name": "Quit to the level screen",
+      "default": "F9"
+    },
+    "key-itermap": {
+      "type": "keybind",
+      "name": "Iteration map",
+      "default": "F10"
+    },
+    "key-faster": {
+      "type": "keybind",
+      "name": "Spectating speed up",
+      "default": "Up"
+    },
+    "key-slower": {
+      "type": "keybind",
+      "name": "Spectating speed down",
+      "default": "Down"
+    },
+    "key-seek-back": {
+      "type": "keybind",
+      "name": "Seek back / frame step",
+      "default": "Left"
+    },
+    "key-seek-forward": {
+      "type": "keybind",
+      "name": "Seek forward / frame step",
+      "default": "Right"
     }
   }
 }
