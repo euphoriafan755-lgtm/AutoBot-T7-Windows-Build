@@ -103,10 +103,8 @@ struct AuthoritativeFreezeProbe {
 };
 
 AuthoritativeFreezeProbe g_authoritativeFreeze{};
-bool g_universalInternalStep = false;
 autobot::presolve::UniversalRuntimeSession g_universalRuntime{};
-autobot::presolve::UniversalSearchRuntimeLiveness g_universalSearchLiveness{};
-PerfClock::time_point g_universalSearchLivenessStarted = PerfClock::now();
+std::uint64_t g_liveOuterFrames = 0;
 std::size_t g_universalRuntimeCallDepth = 0;
 std::string_view g_universalRuntimeCallOperation = "none";
 
@@ -136,13 +134,9 @@ struct UniversalRuntimeCallScope {
         g_universalRuntimeCallOperation = previousOperation;
     }
 };
-bool g_universalSearchLivenessPassLogged = false;
-bool g_universalSearchLivenessFailLogged = false;
 std::size_t g_universalSearchSliceBudget = 8;
 double g_universalSearchLastSliceMs = 0.0;
-std::uint64_t g_liveSimulationSteps = 0;
 std::uint64_t g_liveRealUpdates = 0;
-bool g_liveRoundTripLogged = false;
 autobot::ui::AutonomousHUD* g_universalHUD = nullptr;
 
 autobot::presolve::FreezeInvariantSnapshot captureAuthoritativeFreezeInvariant(PlayLayer* layer) {
@@ -240,162 +234,48 @@ void verifyAuthoritativeFreezeRuntime(PlayLayer* layer) {
     }
 }
 
-void logUniversalRuntimeValidation() {
-    const auto v = g_universalRuntime.validation();
-    log::info(
-        "RUNTIME_INTEGRATION_TEST_MODE=ACTIVE roundTripChecks={} recoveryCount={}",
-        v.roundTripChecks,
-        g_universalRuntime.recoveryCount()
-    );
-    log::info(
-        "CHECKPOINT_ROUNDTRIP_TEST={} checks={}",
-        (v.roundTripChecks > 0 && v.roundTripPass) ? "PASS" : "FAIL",
-        v.roundTripChecks
-    );
-    log::info(
-        "RNG_RESTORE_TEST={} checks={} transitionsObserved={}",
-        !v.rngPass ? "FAIL" : (v.rngTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
-        v.rngChecks,
-        v.rngTransitionsObserved
-    );
-    log::info(
-        "EFFECT_STATE_RESTORE_TEST={} checks={} transitionsObserved={}",
-        !v.effectStatePass ? "FAIL" : (v.effectTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
-        v.effectStateChecks,
-        v.effectTransitionsObserved
-    );
-    log::info(
-        "DYNAMIC_WORLD_RESTORE_TEST={} checks={} transitionsObserved={}",
-        !v.dynamicWorldPass ? "FAIL" : (v.dynamicTransitionsObserved > 0 ? "PASS" : "NOT_EXERCISED"),
-        v.dynamicWorldChecks,
-        v.dynamicTransitionsObserved
-    );
-    log::info(
-        "REAL_INPUT_QUEUE_TEST={} checks={}",
-        v.inputQueuePass ? "PASS" : "FAIL",
-        v.inputQueueChecks
-    );
-}
 
 } // namespace
 
 class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer) {
     void update(float dt) {
-        if (g_universalInternalStep) {
-            GJBaseGameLayer::update(dt);
-            return;
-        }
-
         auto* owner = g_universalRuntime.owner();
         const bool universalOwns = owner
             && static_cast<GJBaseGameLayer*>(owner) == static_cast<GJBaseGameLayer*>(this);
+
         if (universalOwns) {
-            g_universalRuntime.setStepCallback([this, owner](float innerDt) {
-                // Simulation steps run only inside a captured oracle state and
-                // are restored before the single visible update below.
-                owner->m_isPaused = false;
-                g_universalInternalStep = true;
-                ++g_liveSimulationSteps;
-                GJBaseGameLayer::update(innerDt);
-                g_universalInternalStep = false;
-            });
-
-            if (g_universalRuntime.searching()) {
-                owner->m_isPaused = false;
-                const auto searchSliceStart = PerfClock::now();
-                {
-                    UniversalRuntimeCallScope runtimeScope("liveSearchSlice");
-                    g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
-                }
-                g_universalSearchLastSliceMs = elapsedMs(searchSliceStart);
-
-                constexpr double kTargetSliceMs = 4.0;
-                constexpr std::size_t kMinSliceBudget = 1;
-                constexpr std::size_t kMaxSliceBudget = 64;
-                if (g_universalSearchLastSliceMs < kTargetSliceMs * 0.50
-                    && g_universalSearchSliceBudget < kMaxSliceBudget) {
-                    g_universalSearchSliceBudget = std::min(
-                        kMaxSliceBudget,
-                        g_universalSearchSliceBudget * 2U
-                    );
-                } else if (g_universalSearchLastSliceMs > kTargetSliceMs * 1.75
-                    && g_universalSearchSliceBudget > kMinSliceBudget) {
-                    g_universalSearchSliceBudget = std::max(
-                        kMinSliceBudget,
-                        g_universalSearchSliceBudget / 2U
-                    );
-                }
-
-                const auto stats = g_universalRuntime.stats();
-                const auto validation = g_universalRuntime.validation();
-                if (!g_liveRoundTripLogged && validation.liveRoundTripChecks > 0) {
-                    g_liveRoundTripLogged = true;
-                    log::info(
-                        "LIVE_SEARCH_ROUNDTRIP_RUNTIME={} checks={} rng={} effects={} dynamic={} "
-                        "queued={} attempts={} pause={}",
-                        validation.roundTripPass ? "PASS" : "FAIL",
-                        validation.liveRoundTripChecks,
-                        validation.rngPass ? "PASS" : "FAIL",
-                        validation.effectStatePass ? "PASS" : "FAIL",
-                        validation.dynamicWorldPass ? "PASS" : "FAIL",
-                        validation.queuedStatePass ? "PASS" : "FAIL",
-                        validation.attemptStatePass ? "PASS" : "FAIL",
-                        validation.pauseStatePass ? "PASS" : "FAIL"
-                    );
-                }
-
-                if (g_universalHUD) {
-                    g_universalHUD->updatePreRun(
-                        autobot::presolve::PreRunStage::Searching,
-                        fmt::format(
-                            "LIVE SEARCH t={:.1f}s eps={:.0f} exp={} steps={} frontier={} best={:.2f}% "
-                            "reroots={} budget={} slice={:.2f}ms",
-                            stats.elapsedSeconds,
-                            stats.expansionsPerSecond,
-                            stats.totalExpansions,
-                            stats.totalEngineSteps,
-                            stats.frontierSize,
-                            stats.bestProgress,
-                            g_universalRuntime.liveRerootCount(),
-                            g_universalSearchSliceBudget,
-                            g_universalSearchLastSliceMs
-                        ),
-                        g_universalRuntime.fullPolicyAvailable(),
-                        stats.bestProgress
-                    );
-                }
-            }
-
-            if (g_universalRuntime.error()) {
-                log::error(
-                    "LIVE_GLOBAL_SEARCH=ERROR generation={} reason={} action=CONTINUE_WITH_LOCAL_MPC",
-                    g_universalRuntime.generation(),
-                    g_universalRuntime.reason()
-                );
-            }
-
-            // Exactly one visible gameplay update per outer scheduler callback.
-            // The search may have executed many reversible simulation steps,
-            // but they were restored before this point.
+            ++g_liveOuterFrames;
             owner->m_isPaused = false;
+
+            // Search never executes the GD engine. This is the one and only
+            // real visible gameplay update for this outer callback.
+            GJBaseGameLayer::update(dt);
             ++g_liveRealUpdates;
-            if (g_liveRealUpdates <= 8 || (g_liveRealUpdates % 120U) == 0U) {
+
+            if (g_liveRealUpdates != g_liveOuterFrames) {
+                log::error(
+                    "ONE_REAL_UPDATE_PER_FRAME_RUNTIME=FAIL outerFrames={} realUpdates={}",
+                    g_liveOuterFrames,
+                    g_liveRealUpdates
+                );
+            } else if (g_liveRealUpdates <= 8 || (g_liveRealUpdates % 120U) == 0U) {
                 const auto stats = g_universalRuntime.stats();
                 log::info(
-                    "LIVE_SOLVER_FRAME generation={} realUpdates={} simulationSteps={} levelTime={:.6f} "
-                    "progress={:.3f}% searchElapsed={:.3f}s expansions={} engineSteps={} frontier={}",
+                    "LIVE_SOLVER_FRAME generation={} outerFrames={} realUpdates={} "
+                    "levelTime={:.6f} progress={:.3f}% searchElapsed={:.3f}s "
+                    "expansions={} shadowSteps={} frontier={} internalGdUpdates={}",
                     g_universalRuntime.generation(),
+                    g_liveOuterFrames,
                     g_liveRealUpdates,
-                    g_liveSimulationSteps,
                     owner->m_gameState.m_levelTime,
                     owner->getCurrentPercent(),
                     stats.elapsedSeconds,
                     stats.totalExpansions,
                     stats.totalEngineSteps,
-                    stats.frontierSize
+                    stats.frontierSize,
+                    g_universalRuntime.internalGdUpdateCalls()
                 );
             }
-            GJBaseGameLayer::update(dt);
             return;
         }
 
@@ -718,10 +598,19 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         }
 
         g_universalRuntime.reset("PlayLayer::startGame normal lifecycle");
+        const auto initialSnapshot = autobot::core::GameStateReader::capture(this, m_fields->tick);
         bool runtimeBeginOk = false;
         {
-            UniversalRuntimeCallScope runtimeScope("begin");
-            runtimeBeginOk = g_universalRuntime.begin(this);
+            UniversalRuntimeCallScope runtimeScope("begin-shadow-search");
+            runtimeBeginOk = g_universalRuntime.begin(
+                this,
+                initialSnapshot,
+                &m_fields->collisionWorld,
+                &m_fields->autonomousDriver.validation(),
+                m_fields->world.completionBoundaryX,
+                m_isPlatformer,
+                m_fields->inputController.botHolding()
+            );
         }
         if (!runtimeBeginOk) {
             m_fields->preRunFreezeActive = false;
@@ -755,13 +644,12 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         releaseAuthoritativeFreeze(this);
         g_universalSearchSliceBudget = 8;
         g_universalSearchLastSliceMs = 0.0;
-        g_liveSimulationSteps = 0;
+        g_liveOuterFrames = 0;
         g_liveRealUpdates = 0;
-        g_liveRoundTripLogged = false;
         m_isPaused = false;
         log::info(
-            "LIVE_SOLVER=ACTIVE stepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
-            "globalSearch=ROLLING localControl=MPC visibleFreeze=NO",
+            "LIVE_SOLVER=ACTIVE shadowStepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
+            "globalSearch=SHADOW localControl=MPC visibleFreeze=NO internalGdSearchUpdates=0",
             g_universalRuntime.stepDt(),
             m_fields->world.unsupportedGameplay
         );
@@ -774,13 +662,8 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
     }
 
     void postUpdate(float dt) {
-        if (g_universalInternalStep) {
-            PlayLayer::postUpdate(dt);
-            return;
-        }
-        // Live runtime never blocks postUpdate waiting for a full policy.
-        // Simulation callbacks return above; this path belongs to the one real
-        // gameplay update and feeds the realtime MPC for the next control step.
+        // The one real gameplay update has already run. Everything below reads
+        // reality, plans on solver-owned state, and queues input for the next frame.
         m_fields->preRunFreezeActive = false;
         m_isPaused = false;
         PlayLayer::postUpdate(dt);
@@ -1010,6 +893,37 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->inputController.botHolding(),
             m_fields->inputController.botHoldingP2()
         );
+
+        if (g_universalRuntime.owner() == this && g_universalRuntime.searching()) {
+            g_universalRuntime.updateLiveRoot(
+                snapshot,
+                m_fields->inputController.botHolding()
+            );
+
+            const auto shadowSearchStart = PerfClock::now();
+            {
+                UniversalRuntimeCallScope runtimeScope("shadowSearchSlice");
+                g_universalRuntime.searchSlice(g_universalSearchSliceBudget);
+            }
+            g_universalSearchLastSliceMs = elapsedMs(shadowSearchStart);
+
+            constexpr double kTargetSliceMs = 4.0;
+            constexpr std::size_t kMinSliceBudget = 1;
+            constexpr std::size_t kMaxSliceBudget = 64;
+            if (g_universalSearchLastSliceMs < kTargetSliceMs * 0.50
+                && g_universalSearchSliceBudget < kMaxSliceBudget) {
+                g_universalSearchSliceBudget = std::min(
+                    kMaxSliceBudget,
+                    g_universalSearchSliceBudget * 2U
+                );
+            } else if (g_universalSearchLastSliceMs > kTargetSliceMs * 1.75
+                && g_universalSearchSliceBudget > kMinSliceBudget) {
+                g_universalSearchSliceBudget = std::max(
+                    kMinSliceBudget,
+                    g_universalSearchSliceBudget / 2U
+                );
+            }
+        }
 
         if (g_universalRuntime.owner() == this) {
             const auto liveSearch = g_universalRuntime.stats();
