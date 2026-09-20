@@ -120,12 +120,6 @@ public:
         std::optional<bool> globalDesiredHold = std::nullopt
     );
 
-    static bool applyGlobalPolicyGuidance(
-        solver::PlanDecision& plan,
-        bool globalDesiredHold,
-        bool botHolding
-    );
-
     bool configureWorld(
         world::StaticWorld const& source,
         world::CollisionWorld const& collisionWorld
