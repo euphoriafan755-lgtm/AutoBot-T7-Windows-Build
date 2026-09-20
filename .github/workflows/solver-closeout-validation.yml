@@ -154,6 +154,62 @@ jobs:
               raise SystemExit("PINNED REPAIR LOOP MISSING EXPECTED PRIMITIVES: " + ", ".join(missing))
           print("REAL_GAME_REPAIR_PATH_AUDIT=PASS")
 
+          # Public/custom lifecycle: inspect the exact FetchContent source tree
+          # after our deterministic configure-time patches have been applied.
+          config = (upstream / "src/mod/config.hpp").read_text(encoding="utf-8")
+          planio = (upstream / "src/mod/plan_io.hpp").read_text(encoding="utf-8-sig")
+          hooks = (upstream / "src/mod/hooks_playlayer.cpp").read_text(encoding="utf-8")
+          session = (upstream / "src/mod/session.hpp").read_text(encoding="utf-8")
+          repair = (upstream / "src/mod/repair.hpp").read_text(encoding="utf-8")
+
+          lifecycle_required = {
+              "retain level ownership": "if (level) level->retain();" in config,
+              "release old level ownership": "if (old) old->release();" in config,
+              "clear progress level on session reset": "clearProgressLevel();" in planio,
+              "custom init checkpoint": "CUSTOM_LEVEL_INIT_ENTER" in hooks,
+              "session configure begin": "SESSION_CONFIG_BEGIN" in session,
+              "session configure end": "SESSION_CONFIG_END" in session,
+              "before original init": "PLAYLAYER_INIT_BEFORE_ORIGINAL" in hooks,
+              "after original init": "PLAYLAYER_INIT_AFTER_ORIGINAL" in hooks,
+              "rebind to PlayLayer level": "this->m_level ? this->m_level : level" in hooks,
+              "solver start begin": "SOLVER_START_BEGIN" in repair,
+              "solver start end": "SOLVER_START_END" in repair,
+              "level reset checkpoint": "LEVEL_RESET" in hooks,
+              "level quit checkpoint": "LEVEL_QUIT" in hooks,
+              "session end checkpoint": "SESSION_END" in session,
+          }
+          bad = [name for name, ok in lifecycle_required.items() if not ok]
+          if bad:
+              raise SystemExit("CUSTOM LIFECYCLE INVARIANT MISSING: " + ", ".join(bad))
+
+          init_pos = hooks.index("bool init(GJGameLevel* level")
+          init_end = hooks.index("void onQuit()", init_pos)
+          init_body = hooks[init_pos:init_end]
+          order = [
+              init_body.index("uiConfigureSession("),
+              init_body.index("bindProgressLevel(level)"),
+              init_body.index("PlayLayer::init(level"),
+              init_body.index("this->m_level ? this->m_level : level"),
+          ]
+          if order != sorted(order):
+              raise SystemExit("CUSTOM LEVEL INIT LIFECYCLE ORDER IS WRONG")
+          print("CUSTOM_LEVEL_SESSION_LIFECYCLE_TEST=PASS")
+
+          hud = (upstream / "src/mod/hud.hpp").read_text(encoding="utf-8")
+          panel = (upstream / "src/mod/ui_panel.hpp").read_text(encoding="utf-8")
+          for token in ["GDSOLVER BOT - SOLVING", "GDSOLVER BOT - REPLAY"]:
+              if token in hud:
+                  raise SystemExit("LEGACY GDSOLVER HUD BRANDING STILL COMPILED: " + token)
+          if "AutoBotT7 Solver" not in hud:
+              raise SystemExit("AUTOBOT HUD BRANDING MISSING")
+          if 'CCLabelBMFont::create("GDSOLVER"' in panel:
+              raise SystemExit("LEGACY GDSOLVER PANEL BRANDING STILL COMPILED")
+          if 'CCLabelBMFont::create("AutoBotT7"' not in panel:
+              raise SystemExit("AUTOBOT PANEL BRANDING MISSING")
+          if not (root / "THIRD_PARTY_GDSOLVER_LICENSE.txt").exists():
+              raise SystemExit("GDSOLVER MIT ATTRIBUTION FILE MISSING")
+          print("AUTOBOT_BRANDING_TEST=PASS")
+
       - name: Compile and package redesigned AutoBot
         shell: pwsh
         run: |
@@ -168,7 +224,7 @@ jobs:
           Write-Host "REAL_GEODE_COMPILE_PACKAGE=PASS"
           Write-Host "ONE_SOLVER_INPUT_AUTHORITY=PASS"
 
-      - name: Prepare Build 4 candidate
+      - name: Prepare public-level stability candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -176,11 +232,11 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability.geode
           SHA256="$(sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — BUILD #4 RUNTIME CANDIDATE
+          AUTOBOT T7 — PUBLIC LEVEL STABILITY CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
@@ -215,12 +271,12 @@ jobs:
           sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
-          echo "BUILD4_CANDIDATE_PREPARED=PASS"
+          echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
 
-      - name: Upload Build 4 candidate
+      - name: Upload public-level stability candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-runtime-candidate-build4
+          name: AutoBot-T7-public-level-stability
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14

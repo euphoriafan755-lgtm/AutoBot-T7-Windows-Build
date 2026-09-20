@@ -795,7 +795,303 @@ endif()
 string(REPLACE "${_autobot_maxattempt_profile_old}" "${_autobot_maxattempt_profile_new}"
     _autobot_play_hooks_text "${_autobot_play_hooks_text}")
 
-file(WRITE "${_autobot_play_hooks}" "${_autobot_play_hooks_text}")
+
+# Public/custom level lifecycle stability:
+# The pinned source cached the GJGameLevel* passed into PlayLayer::init as a
+# process-global raw pointer before the original init and never cleared it in
+# resetSessionState(). Main levels are manager-owned long-lived objects, which
+# masked this. Saved/online/editor levels do not grant that lifetime guarantee.
+# Retain the level while progress suppression may dereference it, clear it on
+# session reset, and after the original PlayLayer init rebind to the layer's
+# actual m_level object.
+set(_autobot_config "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/config.hpp")
+file(READ "\${_autobot_config}" _autobot_config_text)
+set(_autobot_progress_owner_old [=[
+inline LevelProgress g_progressAtStart;
+inline GJGameLevel* g_progressLevel = nullptr;
+]=])
+set(_autobot_progress_owner_new [=[
+inline LevelProgress g_progressAtStart;
+inline GJGameLevel* g_progressLevel = nullptr;
+
+// g_progressLevel is dereferenced after resets and at session teardown. Own one
+// explicit retain while it is published so saved/online/editor level lifetime
+// cannot depend on whichever menu/cache object launched PlayLayer.
+inline void bindProgressLevel(GJGameLevel* level) {
+    if (level == g_progressLevel) return;
+    GJGameLevel* old = g_progressLevel;
+    if (level) level->retain();
+    g_progressLevel = level;
+    log::info("PROGRESS_LEVEL_BIND old={} new={}",
+              static_cast<void*>(old), static_cast<void*>(level));
+    if (old) old->release();
+}
+
+inline void clearProgressLevel() {
+    GJGameLevel* old = g_progressLevel;
+    g_progressLevel = nullptr;
+    g_progressAtStart = LevelProgress{};
+    log::info("PROGRESS_LEVEL_CLEAR old={}", static_cast<void*>(old));
+    if (old) old->release();
+}
+
+inline bool isPublicCustomLevel(GJGameLevel* level) {
+    if (!level) return false;
+    const int id = level->m_levelID.value();
+    return level->m_levelType != GJLevelType::Main || id < 1 || id > 22;
+}
+]=])
+string(FIND "\${_autobot_config_text}" "\${_autobot_progress_owner_old}" _autobot_progress_owner_pos)
+if(_autobot_progress_owner_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver progress-level ownership anchor not found")
+endif()
+string(REPLACE "\${_autobot_progress_owner_old}" "\${_autobot_progress_owner_new}"
+    _autobot_config_text "\${_autobot_config_text}")
+file(WRITE "\${_autobot_config}" "\${_autobot_config_text}")
+
+set(_autobot_plan_io "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/plan_io.hpp")
+file(READ "\${_autobot_plan_io}" _autobot_plan_io_text)
+set(_autobot_progress_clear_old [=[
+    g_blockedAch = 0; g_blockedStat = 0; g_blockedCoin = 0; g_blockedProgress = 0;
+    g_progressRestores = 0;
+]=])
+set(_autobot_progress_clear_new [=[
+    g_blockedAch = 0; g_blockedStat = 0; g_blockedCoin = 0; g_blockedProgress = 0;
+    // Release the retained level before a new scene/session can reuse this
+    // process. This was missing while other level-owned raw pointers already
+    // had explicit reset paths.
+    clearProgressLevel();
+    g_progressRestores = 0;
+]=])
+string(FIND "\${_autobot_plan_io_text}" "\${_autobot_progress_clear_old}" _autobot_progress_clear_pos)
+if(_autobot_progress_clear_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver progress-level cleanup anchor not found")
+endif()
+string(REPLACE "\${_autobot_progress_clear_old}" "\${_autobot_progress_clear_new}"
+    _autobot_plan_io_text "\${_autobot_plan_io_text}")
+file(WRITE "\${_autobot_plan_io}" "\${_autobot_plan_io_text}")
+
+set(_autobot_session "\${AUTOBOT_GDSOLVER_ROOT}/src/mod/session.hpp")
+file(READ "\${_autobot_session}" _autobot_session_text)
+set(_autobot_session_config_begin_old [=[
+inline bool uiConfigureSession(int levelId) {
+    if (g_uiMode == UI_MODE_SOLVE) {
+]=])
+set(_autobot_session_config_begin_new [=[
+inline bool uiConfigureSession(int levelId) {
+    log::info("SESSION_CONFIG_BEGIN levelID={} uiMode={}", levelId, g_uiMode);
+    if (g_uiMode == UI_MODE_SOLVE) {
+]=])
+string(FIND "\${_autobot_session_text}" "\${_autobot_session_config_begin_old}" _autobot_session_config_begin_pos)
+if(_autobot_session_config_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver session-config begin anchor not found")
+endif()
+string(REPLACE "\${_autobot_session_config_begin_old}" "\${_autobot_session_config_begin_new}"
+    _autobot_session_text "\${_autobot_session_text}")
+
+set(_autobot_session_config_end_old [=[
+    solver::g_solveStart = std::chrono::steady_clock::now();
+    return true;
+}
+]=])
+set(_autobot_session_config_end_new [=[
+    solver::g_solveStart = std::chrono::steady_clock::now();
+    writeResult("SESSION_CONFIG_END levelID=" + std::to_string(levelId)
+                + " started=1");
+    log::info("SESSION_CONFIG_END levelID={} started=1", levelId);
+    return true;
+}
+]=])
+string(FIND "\${_autobot_session_text}" "\${_autobot_session_config_end_old}" _autobot_session_config_end_pos)
+if(_autobot_session_config_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver session-config end anchor not found")
+endif()
+string(REPLACE "\${_autobot_session_config_end_old}" "\${_autobot_session_config_end_new}"
+    _autobot_session_text "\${_autobot_session_text}")
+
+set(_autobot_session_end_old [=[
+inline void endSession(const std::string& why) {
+    if (g_sessionOver) return;
+]=])
+set(_autobot_session_end_new [=[
+inline void endSession(const std::string& why) {
+    if (g_sessionOver) return;
+    log::info("SESSION_END reason={} progressLevel={}",
+              why, static_cast<void*>(g_progressLevel));
+    writeResult("SESSION_END reason=" + why);
+]=])
+string(FIND "\${_autobot_session_text}" "\${_autobot_session_end_old}" _autobot_session_end_pos)
+if(_autobot_session_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver session-end checkpoint anchor not found")
+endif()
+string(REPLACE "\${_autobot_session_end_old}" "\${_autobot_session_end_new}"
+    _autobot_session_text "\${_autobot_session_text}")
+file(WRITE "\${_autobot_session}" "\${_autobot_session_text}")
+
+set(_autobot_play_init_old [=[
+    bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
+        // Depending on the panel mode, auto-configure a session whichever level is entered.
+        // Level selection can use the game's own UI as is (custom levels included).
+        // A session in progress (g_started && !g_sessionOver) (including autorun.cfg
+        // launches) is not interfered with. Leftovers of a finished session count as absent
+        // (uiConfigureSession resets everything)
+        bool want = (!g_started || g_sessionOver) && g_uiMode > 0 && level;
+        if (want) uiConfigureSession(level->m_levelID.value());
+        // Sample the level's own record before it has run a tick, so the session-end line can
+        // state whether anything was written into it (see progressDiff).
+        g_progressLevel = level;
+        g_progressAtStart = sampleProgress(level);
+        return PlayLayer::init(level, useReplay, dontCreateObjects);
+    }
+]=])
+set(_autobot_play_init_new [=[
+    bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
+        const bool custom = isPublicCustomLevel(level);
+        if (custom && level) {
+            log::info(
+                "CUSTOM_LEVEL_INIT_ENTER ptr={} levelID={} levelType={} "
+                "levelVersion={} gameVersion={} objectCount={} levelStringSize={}",
+                static_cast<void*>(level), level->m_levelID.value(),
+                static_cast<int>(level->m_levelType), level->m_levelVersion,
+                level->m_gameVersion, level->m_objectCount,
+                level->m_levelString.size());
+        }
+        log::info("PLAYLAYER_INIT_BEFORE_ORIGINAL level={} custom={}",
+                  static_cast<void*>(level), custom ? 1 : 0);
+
+        // Depending on the panel mode, auto-configure a session whichever level is entered.
+        // uiConfigureSession resets old session state, including the previous retained level,
+        // so ownership of this level is established only after that reset.
+        bool want = (!g_started || g_sessionOver) && g_uiMode > 0 && level;
+        if (want) uiConfigureSession(level->m_levelID.value());
+
+        bindProgressLevel(level);
+        g_progressAtStart = sampleProgress(level);
+        if (custom && level && g_started) {
+            writeResult(fmt::format(
+                "CUSTOM_LEVEL_INIT_ENTER ptr={} levelID={} levelType={} "
+                "levelVersion={} gameVersion={} objectCount={} levelStringSize={}",
+                static_cast<void*>(level), level->m_levelID.value(),
+                static_cast<int>(level->m_levelType), level->m_levelVersion,
+                level->m_gameVersion, level->m_objectCount,
+                level->m_levelString.size()));
+        }
+        if (g_started) writeResult("PLAYLAYER_INIT_BEFORE_ORIGINAL");
+
+        const bool ok = PlayLayer::init(level, useReplay, dontCreateObjects);
+        log::info("PLAYLAYER_INIT_AFTER_ORIGINAL ok={} inputLevel={} layerLevel={}",
+                  ok ? 1 : 0, static_cast<void*>(level),
+                  static_cast<void*>(this->m_level));
+        if (g_started) writeResult(std::string("PLAYLAYER_INIT_AFTER_ORIGINAL ok=")
+                                   + (ok ? "1" : "0"));
+
+        if (!ok) {
+            clearProgressLevel();
+            return false;
+        }
+
+        // Bind to the actual level retained/used by PlayLayer after GD has finished init.
+        // Some custom launch flows do not have the same ownership as getMainLevel().
+        GJGameLevel* liveLevel = this->m_level ? this->m_level : level;
+        bindProgressLevel(liveLevel);
+        if (custom)
+            log::info("CUSTOM_LEVEL_INIT_BOUND input={} live={}",
+                      static_cast<void*>(level), static_cast<void*>(liveLevel));
+        return true;
+    }
+]=])
+string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_play_init_old}" _autobot_play_init_pos)
+if(_autobot_play_init_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver PlayLayer::init lifecycle anchor not found")
+endif()
+string(REPLACE "\${_autobot_play_init_old}" "\${_autobot_play_init_new}"
+    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+
+set(_autobot_quit_checkpoint_old [=[
+    void onQuit() {
+        // Exiting from the pause menu = session aborted. endSession alone is not enough:
+]=])
+set(_autobot_quit_checkpoint_new [=[
+    void onQuit() {
+        log::info("LEVEL_QUIT this={} level={} started={} over={}",
+                  static_cast<void*>(this), static_cast<void*>(this->m_level),
+                  g_started ? 1 : 0, g_sessionOver ? 1 : 0);
+        if (g_started) writeResult("LEVEL_QUIT");
+        // Exiting from the pause menu = session aborted. endSession alone is not enough:
+]=])
+string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_quit_checkpoint_old}" _autobot_quit_checkpoint_pos)
+if(_autobot_quit_checkpoint_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver level-quit checkpoint anchor not found")
+endif()
+string(REPLACE "\${_autobot_quit_checkpoint_old}" "\${_autobot_quit_checkpoint_new}"
+    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+
+set(_autobot_reset_checkpoint_old [=[
+    void resetLevel() {
+        // A reset of an old layer (embers awaiting the scene swap) must not touch the books
+]=])
+set(_autobot_reset_checkpoint_new [=[
+    void resetLevel() {
+        log::info("LEVEL_RESET this={} live={} tick={}",
+                  static_cast<void*>(this), static_cast<void*>(PlayLayer::get()),
+                  (long long)g_tick);
+        if (g_started) writeResult("LEVEL_RESET tick=" + std::to_string((long long)g_tick));
+        // A reset of an old layer (embers awaiting the scene swap) must not touch the books
+]=])
+string(FIND "\${_autobot_play_hooks_text}" "\${_autobot_reset_checkpoint_old}" _autobot_reset_checkpoint_pos)
+if(_autobot_reset_checkpoint_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver level-reset checkpoint anchor not found")
+endif()
+string(REPLACE "\${_autobot_reset_checkpoint_old}" "\${_autobot_reset_checkpoint_new}"
+    _autobot_play_hooks_text "\${_autobot_play_hooks_text}")
+
+file(WRITE "\${_autobot_play_hooks}" "\${_autobot_play_hooks_text}")
+
+# Solver-start checkpoints. No search behavior changes.
+file(READ "\${_autobot_repair}" _autobot_repair_text)
+set(_autobot_solver_start_begin_old [=[
+inline void start(GJBaseGameLayer* l) {
+    if (!l) return;
+    if (refuseIfPlatformer(l)) return;
+]=])
+set(_autobot_solver_start_begin_new [=[
+inline void start(GJBaseGameLayer* l) {
+    if (!l) return;
+    log::info("SOLVER_START_BEGIN layer={} playLayer={} levelID={}",
+              static_cast<void*>(l), static_cast<void*>(PlayLayer::get()),
+              g_cfg.levelId);
+    writeResult("SOLVER_START_BEGIN levelID=" + std::to_string(g_cfg.levelId));
+    if (refuseIfPlatformer(l)) return;
+]=])
+string(FIND "\${_autobot_repair_text}" "\${_autobot_solver_start_begin_old}" _autobot_solver_start_begin_pos)
+if(_autobot_solver_start_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver solver-start begin anchor not found")
+endif()
+string(REPLACE "\${_autobot_solver_start_begin_old}" "\${_autobot_solver_start_begin_new}"
+    _autobot_repair_text "\${_autobot_repair_text}")
+
+set(_autobot_solver_start_end_old [=[
+    if (!startBootstrapRecord())
+        beginFirstAttempt();
+}
+]=])
+set(_autobot_solver_start_end_new [=[
+    const bool bootstrapStarted = startBootstrapRecord();
+    if (!bootstrapStarted)
+        beginFirstAttempt();
+    writeResult("SOLVER_START_END csvBytes=" + std::to_string(g_csv.size())
+                + " bootstrap=" + std::to_string(bootstrapStarted ? 1 : 0));
+    log::info("SOLVER_START_END csvBytes={} bootstrap={}",
+              g_csv.size(), bootstrapStarted ? 1 : 0);
+}
+]=])
+string(FIND "\${_autobot_repair_text}" "\${_autobot_solver_start_end_old}" _autobot_solver_start_end_pos)
+if(_autobot_solver_start_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver solver-start end anchor not found")
+endif()
+string(REPLACE "\${_autobot_solver_start_end_old}" "\${_autobot_solver_start_end_new}"
+    _autobot_repair_text "\${_autobot_repair_text}")
+file(WRITE "\${_autobot_repair}" "\${_autobot_repair_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.
@@ -812,10 +1108,26 @@ if(NOT _fxcensus_text MATCHES "inline int g_uiMode = UI_MODE_SOLVE;")
 endif()
 file(WRITE "${_fxcensus}" "${_fxcensus_text}")
 
-# Identity-only patch. Solver behaviour remains the pinned upstream behaviour.
+# Visible AutoBot branding. Legal MIT attribution remains in
+# THIRD_PARTY_GDSOLVER_LICENSE.txt; this changes UI strings only.
+set(_hud "${AUTOBOT_GDSOLVER_ROOT}/src/mod/hud.hpp")
+file(READ "${_hud}" _hud_text)
+foreach(_legacy_badge "GDSOLVER BOT - SOLVING" "GDSOLVER BOT - REPLAY")
+    string(FIND "${_hud_text}" "${_legacy_badge}" _autobot_badge_pos)
+    if(_autobot_badge_pos EQUAL -1)
+        message(FATAL_ERROR "Pinned gdsolver HUD branding anchor not found: ${_legacy_badge}")
+    endif()
+    string(REPLACE "${_legacy_badge}" "AutoBotT7 Solver" _hud_text "${_hud_text}")
+endforeach()
+file(WRITE "${_hud}" "${_hud_text}")
+
 set(_panel "${AUTOBOT_GDSOLVER_ROOT}/src/mod/ui_panel.hpp")
 file(READ "${_panel}" _panel_text)
-string(REPLACE "\"GDSOLVER\"" "\"AUTOBOT T7\"" _panel_text "${_panel_text}")
+string(FIND "${_panel_text}" "\"GDSOLVER\"" _autobot_panel_brand_pos)
+if(_autobot_panel_brand_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver panel branding anchor not found")
+endif()
+string(REPLACE "\"GDSOLVER\"" "\"AutoBotT7\"" _panel_text "${_panel_text}")
 file(WRITE "${_panel}" "${_panel_text}")
 
 file(GLOB_RECURSE AUTOBOT_SOLVER_SOURCES CONFIGURE_DEPENDS
