@@ -1,4 +1,5 @@
 #include "autobot/control/AutonomousTestDriver.hpp"
+#include "autobot/control/GlobalPolicyGuidance.hpp"
 
 #include <algorithm>
 
@@ -124,49 +125,6 @@ void AutonomousTestDriver::selectTrajectoryForCurrentSample(
         plan.predictedNextState.holding = wantHold;
         plan.predictedNextState.alive = !p.collision;
     }
-}
-
-bool AutonomousTestDriver::applyGlobalPolicyGuidance(
-    solver::PlanDecision& plan,
-    bool globalDesiredHold,
-    bool botHolding
-) {
-    const InputAction desired = globalDesiredHold
-        ? (botHolding ? InputAction::Hold : InputAction::Press)
-        : (botHolding ? InputAction::Release : InputAction::NoPress);
-
-    std::size_t best = std::numeric_limits<std::size_t>::max();
-    int bestPriority = -1;
-    double bestScore = -std::numeric_limits<double>::infinity();
-
-    for (std::size_t i = 0; i < plan.trajectories.size(); ++i) {
-        auto const& trajectory = plan.trajectories[i];
-        if (trajectory.fatalCollision) continue;
-
-        const bool wantHold = trajectory.candidate.desiredHoldAt(0);
-        const InputAction candidateAction = wantHold
-            ? (botHolding ? InputAction::Hold : InputAction::Press)
-            : (botHolding ? InputAction::Release : InputAction::NoPress);
-        if (candidateAction != desired) continue;
-
-        int priority = 1;
-        if (trajectory.horizonConclusive) ++priority;
-        if (trajectory.globalRouteCompatible) ++priority;
-
-        if (best == std::numeric_limits<std::size_t>::max()
-            || priority > bestPriority
-            || (priority == bestPriority && trajectory.score > bestScore)) {
-            best = i;
-            bestPriority = priority;
-            bestScore = trajectory.score;
-        }
-    }
-
-    if (best == std::numeric_limits<std::size_t>::max()) return false;
-
-    selectTrajectoryForCurrentSample(plan, best, botHolding);
-    plan.reason = "GLOBAL POLICY + LOCAL MPC: " + plan.trajectories[best].candidate.label;
-    return true;
 }
 
 void AutonomousTestDriver::clearActionCountdown() {
@@ -537,7 +495,7 @@ AutonomousDecision AutonomousTestDriver::decide(
                 snapshot.dualMode ? &m_validationP2 : nullptr
             );
             const bool globalApplied = globalDesiredHold.has_value()
-                && applyGlobalPolicyGuidance(
+                && ::autobot::control::applyGlobalPolicyGuidance(
                     decision.plan,
                     *globalDesiredHold,
                     botHolding
