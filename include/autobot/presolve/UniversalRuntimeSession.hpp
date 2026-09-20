@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,54 @@
 class PlayLayer;
 
 namespace autobot::presolve {
+
+struct LiveRootAssessment {
+    bool reroot = false;
+    std::string_view reason = "root-reusable";
+};
+
+inline LiveRootAssessment assessLiveRoot(
+    core::GameSnapshot const& root,
+    core::GameSnapshot const& previous,
+    core::GameSnapshot const& current,
+    std::size_t framesSinceRoot,
+    std::size_t reusablePolicyTicks
+) {
+    constexpr std::size_t kRollingRootWindowFrames = 24;
+
+    if (!root.valid || !previous.valid || !current.valid) {
+        return {true, "invalid-live-state"};
+    }
+    if (current.player.dead) {
+        return {true, "death"};
+    }
+    if (current.levelTime + 0.02 < previous.levelTime
+        || current.levelProgress + 0.5f < previous.levelProgress) {
+        return {true, "attempt-restart"};
+    }
+    if (current.player.mode != previous.player.mode
+        || current.player.mini != previous.player.mini
+        || current.player.upsideDown != previous.player.upsideDown
+        || current.dualMode != previous.dualMode) {
+        return {true, "mode-or-portal-transition"};
+    }
+
+    const double dx = std::abs(current.player.x - previous.player.x);
+    const double dy = std::abs(current.player.y - previous.player.y);
+    const double maxDx = std::max(120.0, std::abs(previous.player.velocityX) * 8.0 + 30.0);
+    const double maxDy = std::max(180.0, std::abs(previous.player.velocityY) * 8.0 + 60.0);
+    if (dx > maxDx || dy > maxDy) {
+        return {true, "state-discontinuity"};
+    }
+
+    if (reusablePolicyTicks > 0 && framesSinceRoot >= reusablePolicyTicks) {
+        return {true, "policy-prefix-consumed"};
+    }
+    if (framesSinceRoot >= kRollingRootWindowFrames) {
+        return {true, "rolling-window-advance"};
+    }
+    return {};
+}
 
 enum class UniversalRuntimeStage {
     Idle,
@@ -68,6 +117,12 @@ public:
     [[nodiscard]] std::uint64_t generation() const { return m_generation; }
     [[nodiscard]] std::size_t liveRerootCount() const { return m_liveRerootCount; }
     [[nodiscard]] bool fullPolicyAvailable() const { return m_fullPolicyAvailable; }
+    [[nodiscard]] std::optional<bool> recommendedP1Hold() const {
+        if (m_policy.empty() || m_liveFramesSinceRoot >= m_policy.size()) return std::nullopt;
+        return m_policy[m_liveFramesSinceRoot].p1Hold;
+    }
+    [[nodiscard]] std::size_t liveFramesObserved() const { return m_liveFramesObserved; }
+    [[nodiscard]] std::size_t liveFramesSinceRoot() const { return m_liveFramesSinceRoot; }
     [[nodiscard]] std::size_t internalGdUpdateCalls() const {
         return m_oracle ? m_oracle->internalGdUpdateCalls() : 0;
     }
@@ -86,8 +141,12 @@ private:
     UniversalSearchCore m_search;
 
     core::GameSnapshot m_pendingLiveSnapshot{};
+    core::GameSnapshot m_rootLiveSnapshot{};
+    core::GameSnapshot m_lastLiveSnapshot{};
     bool m_pendingP1Holding = false;
     bool m_liveRootDirty = false;
+    std::size_t m_liveFramesObserved = 0;
+    std::size_t m_liveFramesSinceRoot = 0;
 
     std::vector<UniversalAction> m_policy;
     std::size_t m_refinement = 0;
