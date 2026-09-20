@@ -6,7 +6,9 @@
 #include "autobot/solver/PhysicsValidationHarness.hpp"
 #include "autobot/world/CollisionWorld.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
