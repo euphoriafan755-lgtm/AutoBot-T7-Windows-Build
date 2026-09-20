@@ -220,6 +220,7 @@ void UniversalRuntimeSession::reset(std::string_view reason) {
     m_liveRootDirty = false;
     m_liveFramesObserved = 0;
     m_liveFramesSinceRoot = 0;
+    m_livePhysicsTicksSinceRoot = 0;
     m_policy.clear();
     m_refinement = 0;
     m_stallRecoveryCount = 0;
