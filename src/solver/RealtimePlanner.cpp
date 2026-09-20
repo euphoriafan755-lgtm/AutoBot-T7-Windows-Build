@@ -48,6 +48,37 @@ double forwardExtent(world::WorldRect const& rect) {
     return std::max(0.0, e.right - e.left);
 }
 
+double effectiveNormalizedStepDt(ModeCalibration const& calibration) {
+    const double measured = calibration.normalizedStepDt();
+    return std::isfinite(measured) && measured > 0.00001 ? measured : 1.0;
+}
+
+bool provisionalPhysicsUsable(core::PlayerState const& player) {
+    return player.mode != core::GameMode::Unknown
+        && std::isfinite(player.x)
+        && std::isfinite(player.y)
+        && std::isfinite(player.velocityX)
+        && std::isfinite(player.velocityY)
+        && std::isfinite(player.gravity)
+        && std::isfinite(player.gravityModifier)
+        && std::isfinite(player.jumpVelocity)
+        && player.objectBoundsWidth > 0.0
+        && player.objectBoundsHeight > 0.0;
+}
+
+PhysicsModelStatus physicsStatus(
+    PhysicsValidationHarness const& validation,
+    core::GameMode mode
+) {
+    if (validation.modeReady(mode)) return PhysicsModelStatus::Verified;
+    auto const& c = validation.calibration(mode);
+    if (c.timingSamples > 0 || c.horizontalScaleSamples > 0
+        || c.neutralSamples > 0 || c.inputReady()) {
+        return PhysicsModelStatus::Calibrating;
+    }
+    return PhysicsModelStatus::Provisional;
+}
+
 } // namespace
 
 control::InputAction RealtimePlanner::firstInput(
@@ -68,8 +99,7 @@ std::size_t RealtimePlanner::horizonTicks(
     double requiredForwardDistance,
     SearchBudget const& budget
 ) {
-    const double normalizedDt = calibration.normalizedStepDt();
-    if (normalizedDt <= 0.0) return 0;
+    const double normalizedDt = effectiveNormalizedStepDt(calibration);
     const double distancePerSample = std::max(
         std::abs(snapshot.player.velocityX) * normalizedDt,
         0.01
@@ -147,9 +177,10 @@ PlanDecision RealtimePlanner::plan(
     }
 
     const auto& calibration = validation.calibration(snapshot.player.mode);
-    decision.physicsReady = validation.modeReady(snapshot.player.mode);
+    decision.physicsModelStatus = physicsStatus(validation, snapshot.player.mode);
+    decision.physicsReady = provisionalPhysicsUsable(snapshot.player);
     decision.modelTruth.realDtSeconds = calibration.sampleDt;
-    decision.modelTruth.simDtNormalized = calibration.normalizedStepDt();
+    decision.modelTruth.simDtNormalized = effectiveNormalizedStepDt(calibration);
     decision.modelTruth.physicsTicksPerSecond = calibration.physicsTicksPerSecond;
     decision.modelTruth.rawVelocityX = snapshot.player.velocityX;
     decision.modelTruth.observedWorldVelocityX = calibration.observedWorldVelocityX;
@@ -157,7 +188,7 @@ PlanDecision RealtimePlanner::plan(
     decision.modelTruth.verticalPositionScale = calibration.yPositionScale();
 
     if (!decision.physicsReady) {
-        decision.reason = "AUTOBOT WAITING FOR PHYSICS UNIT CALIBRATION";
+        decision.reason = "PHYSICS STATE INVALID - CANNOT BOOTSTRAP";
         decision.inputAction = control::InputAction::SafeStop;
         finish();
         return decision;
@@ -212,9 +243,9 @@ PlanDecision RealtimePlanner::plan(
 
     if (snapshot.dualMode) {
         decision.dualMode = true;
-        if (!p2Validation || !p2Validation->modeReady(snapshot.player2.mode)) {
+        if (!p2Validation || !provisionalPhysicsUsable(snapshot.player2)) {
             decision.physicsReady = false;
-            decision.reason = "AUTOBOT WAITING FOR P2 PHYSICS UNIT CALIBRATION";
+            decision.reason = "P2 PHYSICS STATE INVALID - CANNOT BOOTSTRAP";
             decision.inputAction = control::InputAction::SafeStop;
             decision.p2InputAction = control::InputAction::SafeStop;
             finish();
@@ -224,8 +255,12 @@ PlanDecision RealtimePlanner::plan(
             snapshot, collisionWorld, validation, *p2Validation, botHolding, botHoldingP2,
             dynamicWorld, triggerWorld, searchBudget
         );
-        decision.physicsReady = validation.modeReady(snapshot.player.mode)
-            && p2Validation->modeReady(snapshot.player2.mode);
+        decision.physicsReady = provisionalPhysicsUsable(snapshot.player)
+            && provisionalPhysicsUsable(snapshot.player2);
+        if (decision.physicsModelStatus != PhysicsModelStatus::Verified
+            || physicsStatus(*p2Validation, snapshot.player2.mode) != PhysicsModelStatus::Verified) {
+            decision.physicsModelStatus = PhysicsModelStatus::Calibrating;
+        }
         decision.plannerReady = joint.ready;
         decision.active = joint.active;
         decision.inputAction = joint.p1Action;
@@ -255,7 +290,7 @@ PlanDecision RealtimePlanner::plan(
 
     const double direction = snapshot.player.velocityX < -0.001 ? -1.0 : 1.0;
     const double distancePerSample = std::max(
-        std::abs(snapshot.player.velocityX) * calibration.normalizedStepDt(),
+        std::abs(snapshot.player.velocityX) * effectiveNormalizedStepDt(calibration),
         0.01
     );
 
