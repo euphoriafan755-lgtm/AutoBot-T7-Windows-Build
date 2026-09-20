@@ -544,6 +544,7 @@ AutonomousDecision AutonomousTestDriver::decide(
                 );
             if (globalApplied) {
                 decision.plan.reason += " [GLOBAL PREFIX APPLIED]";
+                clearActionCountdown();
             }
 
             decision.action = decision.plan.inputAction;
