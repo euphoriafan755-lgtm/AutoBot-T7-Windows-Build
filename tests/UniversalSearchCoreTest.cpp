@@ -94,6 +94,83 @@ private:
     std::unordered_map<UniversalToken, State> m_snapshots;
 };
 
+
+class SurvivalOracle final : public IUniversalStateOracle {
+public:
+    UniversalObservation observe() const override {
+        UniversalObservation out{};
+        out.valid = true;
+        out.dead = m_state.dead;
+        out.complete = false;
+        out.progress = 42.0;
+        return out;
+    }
+
+    std::optional<UniversalToken> capture() override {
+        const auto token = ++m_next;
+        m_snapshots[token] = m_state;
+        return token;
+    }
+
+    bool restore(UniversalToken token) override {
+        auto const it = m_snapshots.find(token);
+        if (it == m_snapshots.end()) return false;
+        m_state = it->second;
+        return true;
+    }
+
+    UniversalObservation step(UniversalAction action) override {
+        if (!m_state.routeChosen) {
+            m_state.routeChosen = true;
+            m_state.pressRoute = action.p1Hold;
+        }
+
+        ++m_state.tick;
+        const std::size_t survivalLimit = m_state.pressRoute ? 100 : 10;
+        if (m_state.tick >= survivalLimit) m_state.dead = true;
+        return observe();
+    }
+
+    void discard(UniversalToken token) override {
+        m_snapshots.erase(token);
+    }
+
+    std::optional<UniversalCanonicalState> canonicalState(
+        UniversalToken token
+    ) const override {
+        auto const it = m_snapshots.find(token);
+        if (it == m_snapshots.end()) return std::nullopt;
+        auto const& s = it->second;
+
+        UniversalCanonicalState out{};
+        out.words = {
+            static_cast<std::uint64_t>(s.tick),
+            static_cast<std::uint64_t>(s.routeChosen),
+            static_cast<std::uint64_t>(s.pressRoute),
+            static_cast<std::uint64_t>(s.dead),
+        };
+        out.hash = {
+            static_cast<std::uint64_t>(s.tick)
+                ^ (static_cast<std::uint64_t>(s.pressRoute) << 32U),
+            0x535552564956414cULL
+        };
+        out.completeRepresentation = true;
+        return out;
+    }
+
+private:
+    struct SurvivalState {
+        std::size_t tick = 0;
+        bool routeChosen = false;
+        bool pressRoute = false;
+        bool dead = false;
+    };
+
+    SurvivalState m_state{};
+    UniversalToken m_next = 0;
+    std::unordered_map<UniversalToken, SurvivalState> m_snapshots;
+};
+
 } // namespace
 
 int main() {
@@ -112,5 +189,23 @@ int main() {
     assert(search.stats().bestProgress >= 100.0);
     std::cout << "UNIVERSAL_SEARCH_CORE=PASS\n";
     std::cout << "GENERATED_UNSEEN_POLICY_REPLAY=PASS ticks=" << search.policy().size() << "\n";
+
+    // Equal forward progress must not let a shallow arbitrary branch replace a
+    // partial solution that has survived substantially farther into the future.
+    assert(betterPartialSolution(false, 42.0, 100, false, 42.0, 10));
+    assert(!betterPartialSolution(false, 42.0, 10, false, 42.0, 100));
+
+    SurvivalOracle survivalOracle;
+    UniversalSearchCore survivalSearch;
+    assert(survivalSearch.begin(survivalOracle));
+    survivalSearch.work(survivalOracle, 6);
+    const auto prefix = survivalSearch.bestPrefix();
+    assert(!prefix.empty());
+    assert(prefix.front().p1Hold);
+
+    std::cout
+        << "BEST_PREFIX_SURVIVAL_TEST=PASS "
+        << "no_press_survival=10 press_survival=100 "
+        << "equal_progress=YES best_prefix=PRESS\n";
     return 0;
 }
