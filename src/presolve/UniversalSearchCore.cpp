@@ -141,6 +141,7 @@ void UniversalSearchCore::reset(IUniversalStateOracle* oracle, std::string_view 
     m_replayStates.clear();
     m_replayCursor = 0;
     m_replayToken = kInvalidUniversalToken;
+    m_bestMetaIndex = 0;
     m_totalExpansions = 0;
     m_totalEngineSteps = 0;
     m_currentDepth = 0;
@@ -255,12 +256,27 @@ bool UniversalSearchCore::begin(IUniversalStateOracle& oracle) {
     m_rootObservation = root;
     m_rootCanonical = *canonical;
     m_meta.push_back(NodeMeta{});
+    m_bestMetaIndex = 0;
     remember(*canonical, 0);
     m_frontier.push_back({m_rootToken, 0, root, *canonical});
     m_bestProgress = root.progress;
     m_rootProgress = root.progress;
     m_stage = root.complete ? UniversalSearchStage::Ready : UniversalSearchStage::Searching;
     return true;
+}
+
+std::vector<UniversalAction> UniversalSearchCore::bestPrefix() const {
+    std::vector<UniversalAction> result;
+    auto metaIndex = m_bestMetaIndex;
+    while (metaIndex != 0 && metaIndex < m_meta.size()) {
+        auto const& node = m_meta[metaIndex];
+        for (std::size_t i = 0; i < node.repeatTicks; ++i) {
+            result.push_back(node.action);
+        }
+        metaIndex = node.parent;
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
 }
 
 void UniversalSearchCore::reconstructPolicy(std::size_t metaIndex) {
@@ -479,6 +495,9 @@ UniversalSearchStats UniversalSearchCore::work(IUniversalStateOracle& oracle, st
 
             const auto childMeta = m_meta.size();
             m_meta.push_back({entry.metaIndex, action, childDepth, advanced.ticks});
+            if (observation.progress >= m_bestProgress - 1e-9) {
+                m_bestMetaIndex = childMeta;
+            }
 
             if (observation.complete) {
                 oracle.discard(*token);
