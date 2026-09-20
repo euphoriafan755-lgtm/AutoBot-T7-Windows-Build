@@ -142,12 +142,9 @@ bool ShadowUniversalOracle::setLiveRoot(
 
 double ShadowUniversalOracle::stepDt() const {
     if (!m_ready) return 0.0;
-    if (m_validation) {
-        const auto& calibration = m_validation->calibration(m_state.snapshot.player.mode);
-        const auto dt = calibration.normalizedStepDt();
-        if (dt > 0.0 && std::isfinite(dt)) return dt;
-    }
-    // Raw GD velocities are expressed in normalized physics-tick units.
+    // A shadow policy element is one normalized GD physics tick. Keeping this
+    // domain fixed prevents policy length and action timing from inheriting the
+    // render/sample cadence used to observe the live game.
     return 1.0;
 }
 
