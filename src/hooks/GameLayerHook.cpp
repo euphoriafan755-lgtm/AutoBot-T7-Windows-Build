@@ -631,9 +631,9 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             return;
         }
 
-        m_fields->preRunFreezeActive = true;
+        m_fields->preRunFreezeActive = false;
         PlayLayer::startGame();
-        beginPreRunFreeze();
+        releaseAuthoritativeFreeze(this);
 
         m_fields->runtimeAutoplayActiveLogged = false;
         m_fields->firstRequiredActionLogged = false;
@@ -706,7 +706,6 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             m_fields->world.unknown
         );
         if (m_fields->world.runtimeRequiredUnknown != 0) {
-            beginPreRunFreeze();
             const auto reason = fmt::format(
                 "{} RAW RUNTIME TYPES UNKNOWN TO GD 2.2081 BINDINGS",
                 m_fields->world.runtimeRequiredUnknown
@@ -725,8 +724,9 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             runtimeBeginOk = g_universalRuntime.begin(this);
         }
         if (!runtimeBeginOk) {
-            beginPreRunFreeze();
-            log::error("UNIVERSAL_RUNTIME_ORACLE=FAIL reason={}", g_universalRuntime.reason());
+            m_fields->preRunFreezeActive = false;
+            m_isPaused = false;
+            log::error("UNIVERSAL_RUNTIME_ORACLE=FAIL reason={} action=CONTINUE_WITH_LOCAL_MPC", g_universalRuntime.reason());
             m_fields->autonomousHUD.updatePreRun(
                 autobot::presolve::PreRunStage::NotReady,
                 g_universalRuntime.reason(),
@@ -751,26 +751,23 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
         );
 
         g_universalHUD = &m_fields->autonomousHUD;
-        m_fields->preRunFreezeActive = true;
-        activateAuthoritativeFreeze(this);
-        g_universalSearchLiveness.reset(g_universalRuntime.stats(), captureSearchVisibleState(this));
-        g_universalSearchLivenessStarted = PerfClock::now();
-        g_universalSearchLivenessPassLogged = false;
-        g_universalSearchLivenessFailLogged = false;
+        m_fields->preRunFreezeActive = false;
+        releaseAuthoritativeFreeze(this);
         g_universalSearchSliceBudget = 8;
         g_universalSearchLastSliceMs = 0.0;
-        // SEARCHING must not pause the scheduler; the outer GJBaseGameLayer hook is
-        // the freeze boundary and returns before visible gameplay can advance.
+        g_liveSimulationSteps = 0;
+        g_liveRealUpdates = 0;
+        g_liveRoundTripLogged = false;
         m_isPaused = false;
         log::info(
-            "UNIVERSAL_RUNTIME_ORACLE=ACTIVE stepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
-            "mechanicsDelegatedToGD=YES",
+            "LIVE_SOLVER=ACTIVE stepDt={:.9f} requiredUnknown=0 manualUnsupported={} "
+            "globalSearch=ROLLING localControl=MPC visibleFreeze=NO",
             g_universalRuntime.stepDt(),
             m_fields->world.unsupportedGameplay
         );
         m_fields->autonomousHUD.updatePreRun(
             autobot::presolve::PreRunStage::Searching,
-            "ENGINE RUNTIME ORACLE SEARCH",
+            "LIVE GLOBAL SEARCH + LOCAL MPC",
             false,
             0.0
         );
@@ -781,21 +778,11 @@ class $modify(AutoBotT7GameLayerHook, PlayLayer) {
             PlayLayer::postUpdate(dt);
             return;
         }
-        if (g_authoritativeFreeze.active && g_authoritativeFreeze.owner == this) {
-            ++g_authoritativeFreeze.playLayerPostUpdateCalls;
-        }
-        if (g_universalRuntime.owns(this) && g_universalRuntime.complete()) {
-            m_fields->preRunFreezeActive = false;
-            m_isPaused = false;
-        }
-        if (m_fields->preRunFreezeActive) {
-            // SEARCHING needs the scheduler alive. This path must never advance visible
-            // gameplay; the authoritative outer update hook owns that freeze.
-            m_isPaused = g_universalRuntime.searching() ? false : true;
-            verifyPreRunFreezeInvariant();
-            verifyAuthoritativeFreezeRuntime(this);
-            return;
-        }
+        // Live runtime never blocks postUpdate waiting for a full policy.
+        // Simulation callbacks return above; this path belongs to the one real
+        // gameplay update and feeds the realtime MPC for the next control step.
+        m_fields->preRunFreezeActive = false;
+        m_isPaused = false;
         PlayLayer::postUpdate(dt);
 
         auto* playLayer = PlayLayer::get();
