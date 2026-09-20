@@ -22,6 +22,21 @@ enum class SolverStatus {
     Stopped,
 };
 
+enum class PhysicsModelStatus {
+    Provisional,
+    Calibrating,
+    Verified,
+};
+
+inline constexpr std::string_view toString(PhysicsModelStatus value) {
+    switch (value) {
+        case PhysicsModelStatus::Provisional: return "PROVISIONAL";
+        case PhysicsModelStatus::Calibrating: return "CALIBRATING";
+        case PhysicsModelStatus::Verified: return "VERIFIED";
+    }
+    return "PROVISIONAL";
+}
+
 enum class TrajectoryClass {
     Safe,
     Risky,
@@ -244,6 +259,7 @@ struct PlanDecision {
     bool gameStateReady = false;
     bool worldReady = false;
     bool physicsReady = false;
+    PhysicsModelStatus physicsModelStatus = PhysicsModelStatus::Provisional;
     bool plannerReady = false;
     bool active = false;
 
