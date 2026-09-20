@@ -19,12 +19,18 @@ PortalApplication PortalTransitionResolver::apply(world::CollisionPrimitive cons
 
 namespace {
 
-solver::TrajectoryResult trajectory(char const* label, bool hold, bool fatal, double score) {
+solver::TrajectoryResult trajectory(
+    char const* label,
+    bool hold,
+    bool fatal,
+    double score,
+    bool conclusive = true
+) {
     solver::TrajectoryResult t{};
     t.candidate.label = label;
     t.candidate.segments.push_back({hold, 8});
     t.fatalCollision = fatal;
-    t.horizonConclusive = true;
+    t.horizonConclusive = conclusive;
     t.globalRouteCompatible = true;
     t.score = score;
     t.classification = fatal
@@ -65,6 +71,32 @@ int main() {
     solver::PlanDecision veto{};
     veto.trajectories.push_back(trajectory("FATAL PRESS", true, true, 1000.0));
     assert(!control::applyGlobalPolicyGuidance(veto, true, false));
+
+    solver::PlanDecision inconclusive{};
+    inconclusive.gameStateReady = true;
+    inconclusive.worldReady = true;
+    inconclusive.physicsReady = true;
+    inconclusive.plannerReady = true;
+    inconclusive.status = solver::SolverStatus::Stopped;
+    inconclusive.active = false;
+    inconclusive.inputAction = control::InputAction::SafeStop;
+    inconclusive.reason = "HORIZON INCONCLUSIVE - REFUSING FALSE SAFE";
+    inconclusive.trajectories.push_back(
+        trajectory("LOCAL NO PRESS INCONCLUSIVE", false, false, 5000.0, false)
+    );
+
+    const auto originalStatus = inconclusive.status;
+    const auto originalAction = inconclusive.inputAction;
+    const auto originalReason = inconclusive.reason;
+    assert(!control::applyGlobalPolicyGuidance(inconclusive, false, false));
+    assert(inconclusive.status == originalStatus);
+    assert(inconclusive.inputAction == originalAction);
+    assert(inconclusive.reason == originalReason);
+    assert(!inconclusive.active);
+
+    std::cout
+        << "GLOBAL_POLICY_INCONCLUSIVE_VETO_TEST=PASS "
+        << "global=NO_PRESS local=INCONCLUSIVE preserved=SAFE_STOP\n";
 
     std::cout
         << "GLOBAL_POLICY_TO_INPUT_TEST=PASS "
