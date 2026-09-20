@@ -104,12 +104,20 @@ if(AUTOBOT_BUILD_SOLVER_TESTS)
     add_executable(autobot-build4-functional-tests
         tests/build4/ReachabilityFunctionalTest.cpp
     )
+    add_executable(autobot-solve-perf-profile
+        tests/perf/SolvePerfProfile.cpp
+    )
     target_include_directories(autobot-build4-functional-tests PRIVATE
+        "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
+    )
+    target_include_directories(autobot-solve-perf-profile PRIVATE
         "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
     )
     if(MSVC)
         target_compile_options(autobot-build4-functional-tests PRIVATE /W4)
+        target_compile_options(autobot-solve-perf-profile PRIVATE /O2 /W4)
     else()
         target_compile_options(autobot-build4-functional-tests PRIVATE -Wall -Wextra)
+        target_compile_options(autobot-solve-perf-profile PRIVATE -O3 -Wall -Wextra)
     endif()
 endif()

@@ -81,6 +81,15 @@ jobs:
           & "./build/autobot-build4-functional-tests.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Baseline solve performance profile
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target autobot-solve-perf-profile --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "./build/autobot-solve-perf-profile.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "SOLVE_PROFILE_BASELINE_CAPTURED=PASS"
+
       - name: Architecture and hardcode gates
         shell: python
         run: |
