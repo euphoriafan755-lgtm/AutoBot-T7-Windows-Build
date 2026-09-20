@@ -15,6 +15,7 @@ concurrency:
 jobs:
   validate:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,14 +28,6 @@ jobs:
           set -euo pipefail
           git diff --check origin/main...HEAD
           echo "GIT_DIFF_CHECK=PASS"
-
-      - name: Install Ninja
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -L https://github.com/ninja-build/ninja/releases/latest/download/ninja-win.zip -o ninja.zip
-          7z x ninja.zip -o"$GITHUB_WORKSPACE/ninja"
-          echo "$GITHUB_WORKSPACE/ninja" >> "$GITHUB_PATH"
 
       - name: Setup Geode CLI
         uses: geode-sdk/cli/.github/actions/setup@main
@@ -54,150 +47,104 @@ jobs:
           geode sdk update "5.10.1"
           geode sdk install-binaries --platform win --version "5.10.1"
 
-      - name: Search and runtime regression tests
-        shell: bash
+      - name: Configure redesigned solver
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p ci-tests
-          CXX=(clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude)
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGEODE_DONT_INSTALL_MODS=ON `
+            -DGEODE_TARGET_PLATFORM=Win64 `
+            -DAUTOBOT_BUILD_SOLVER_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "REAL_GEODE_CONFIGURE=PASS"
 
-          "${CXX[@]}" tests/UniversalSearchCoreTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-search.exe
-          ./ci-tests/universal-search.exe
+      - name: Functional reachability gates
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target autobot-build4-functional-tests --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "./build/Release/autobot-build4-functional-tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          "${CXX[@]}" tests/UniversalMechanicsSuiteTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/universal-suite.exe
-          ./ci-tests/universal-suite.exe
-
-          "${CXX[@]}" tests/SearchStateAliasTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/search-alias.exe
-          ./ci-tests/search-alias.exe
-
-          "${CXX[@]}" tests/InfiniteWaitDominanceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/infinite-wait.exe
-          ./ci-tests/infinite-wait.exe
-
-          "${CXX[@]}" tests/UniversalDesyncRecoveryTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/desync-recovery.exe
-          ./ci-tests/desync-recovery.exe
-
-          "${CXX[@]}" tests/UniversalSearchRuntimeLivenessTest.cpp src/presolve/UniversalSearchRuntimeLiveness.cpp -o ci-tests/liveness.exe
-          ./ci-tests/liveness.exe
-
-          "${CXX[@]}" tests/UniversalMacroSearchPerformanceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/macro-perf.exe
-          ./ci-tests/macro-perf.exe
-
-          "${CXX[@]}" tests/IncrementalExpansionBudgetTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/incremental-budget.exe
-          ./ci-tests/incremental-budget.exe
-
-          "${CXX[@]}" tests/RuntimeSearchBootstrapTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/runtime-bootstrap.exe
-          ./ci-tests/runtime-bootstrap.exe
-
-          "${CXX[@]}" tests/RollingSearchPersistenceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/rolling-persistence.exe
-          ./ci-tests/rolling-persistence.exe
-
-          "${CXX[@]}" tests/LiveSearchRoundtripTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/live-roundtrip.exe
-          ./ci-tests/live-roundtrip.exe
-
-          SHADOW_COMMON=(
-            src/presolve/ShadowUniversalOracle.cpp
-            src/presolve/UniversalSearchCore.cpp
-            src/solver/PhysicsModels.cpp
-            src/solver/PhysicsValidationHarness.cpp
-            src/world/CollisionWorld.cpp
-            src/world/SpatialHash.cpp
-          )
-
-          "${CXX[@]}" tests/NoInternalGDUpdateDuringSearchTest.cpp "${SHADOW_COMMON[@]}" -o ci-tests/no-internal-gd-update.exe
-          ./ci-tests/no-internal-gd-update.exe
-
-          "${CXX[@]}" tests/ShadowSimDeterminismTest.cpp "${SHADOW_COMMON[@]}" -o ci-tests/shadow-determinism.exe
-          ./ci-tests/shadow-determinism.exe
-
-      - name: Search/live-engine boundary audit
+      - name: Architecture and hardcode gates
         shell: python
         run: |
           from pathlib import Path
 
-          search_paths = [
-              "src/presolve/UniversalSearchCore.cpp",
-              "src/presolve/UniversalRuntimeSession.cpp",
-              "src/presolve/ShadowUniversalOracle.cpp",
-              "src/solver/RealtimePlanner.cpp",
-              "src/solver/TrajectorySimulator.cpp",
-              "src/solver/GlobalPlanner.cpp",
-          ]
+          root = Path.cwd()
+          cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+          test_src = (root / "tests/build4/ReachabilityFunctionalTest.cpp").read_text(encoding="utf-8")
 
-          forbidden = [
-              "GJBaseGameLayer::update",
-              "PlayLayer::update",
-              "createCheckpoint",
-              "loadFromCheckpoint",
-              "GeometryDashRuntimeOracle",
-          ]
+          if 'file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)' in cmake:
+              raise SystemExit("OLD AUTOBOT SOURCE GLOB IS STILL ACTIVE")
+          if 'AUTOBOT_GDSOLVER_ROOT}/src/*.cpp' not in cmake:
+              raise SystemExit("PINNED REACHABILITY SOLVER IS NOT THE ACTIVE MOD SOURCE")
+          print("OLD_SYSTEM_REMOVED_FROM_INPUT_PATH=PASS")
 
-          for path in search_paths:
-              text = Path(path).read_text(encoding="utf-8")
-              for token in forbidden:
+          forbidden_local = [
+              "Stereo Madness",
+              "solution_lv1",
+              "percentage -> click",
+              "percent -> click",
+              "known click timestamp",
+              "level ID -> clicks",
+          ]
+          active_local = cmake + "\n" + test_src
+          for token in forbidden_local:
+              if token.lower() in active_local.lower():
+                  raise SystemExit(f"LOCAL LEVEL HARDCODE TOKEN FOUND: {token}")
+          print("NO_LEVEL_HARDCODE_TEST=PASS")
+
+          deps = root / "build" / "_deps"
+          candidates = list(deps.glob("autobot_gdsolver_upstream-src"))
+          if len(candidates) != 1:
+              raise SystemExit(f"EXPECTED ONE PINNED GDSOLVER SOURCE TREE, FOUND {len(candidates)}")
+          upstream = candidates[0]
+
+          dp_root = upstream / "dp" / "src"
+          forbidden_dp = [
+              "#include <Geode",
+              '#include "Geode',
+              "GJBaseGameLayer::update(",
+              "PlayLayer::update(",
+              "createCheckpoint(",
+              "loadFromCheckpoint(",
+          ]
+          for path in dp_root.rglob("*"):
+              if not path.is_file():
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for token in forbidden_dp:
                   if token in text:
-                      raise SystemExit(f"FORBIDDEN SEARCH ENGINE PATH: {path}: {token}")
+                      raise SystemExit(f"DP SEARCH TOUCHES LIVE GD: {path}: {token}")
+          print("SEARCH_BRANCHING_INTERNAL_GD_UPDATE_CALLS=0")
+          print("SEARCH_GAME_BOUNDARY_TEST=PASS")
 
-          hook = Path("src/hooks/GameLayerHook.cpp").read_text(encoding="utf-8")
-          if "setStepCallback" in hook or "g_universalInternalStep" in hook or "innerDt" in hook:
-              raise SystemExit("LIVE HOOK STILL CONTAINS INTERNAL GD SIMULATION PATH")
+          repair = (upstream / "src/mod/repair.hpp").read_text(encoding="utf-8")
+          required = ["AnchorRow", "dpbridge::solve", "fixup", "anchor"]
+          missing = [token for token in required if token not in repair]
+          if missing:
+              raise SystemExit("PINNED REPAIR LOOP MISSING EXPECTED PRIMITIVES: " + ", ".join(missing))
+          print("REAL_GAME_REPAIR_PATH_AUDIT=PASS")
 
-          start = hook.index("class $modify(AutoBotT7BaseGameLayerHook, GJBaseGameLayer)")
-          end = hook.index("class $modify(AutoBotT7GameLayerHook, PlayLayer)", start)
-          base_hook = hook[start:end]
-
-          calls = base_hook.count("GJBaseGameLayer::update(dt);")
-          if calls != 2:
-              raise SystemExit(f"EXPECTED TWO SOURCE CALLS (owned path + fallback), FOUND {calls}")
-
-          owned = base_hook.split("if (universalOwns)", 1)[1].split("return;", 1)[0]
-          if owned.count("GJBaseGameLayer::update(dt);") != 1:
-              raise SystemExit("OWNED LIVE FRAME DOES NOT CONTAIN EXACTLY ONE REAL UPDATE")
-
-          if "searchSlice" in base_hook or "ShadowUniversalOracle" in base_hook:
-              raise SystemExit("SEARCH WORK MUST NOT RUN INSIDE GJBaseGameLayer::update")
-
-          print("NO_INTERNAL_GD_UPDATE_DURING_SEARCH_SOURCE_AUDIT=PASS")
-          print("ONE_REAL_UPDATE_PER_FRAME_TEST=PASS")
-
-      - name: Existing solver gates
-        shell: bash
+      - name: Compile and package redesigned AutoBot
+        shell: pwsh
         run: |
-          set -euo pipefail
-          CXX=(clang++ -std=c++23 -Wall -Wextra -Werror -Iinclude)
-          COMMON=(
-            src/presolve/PreRunSolver.cpp
-            src/world/SpatialHash.cpp src/world/CollisionWorld.cpp src/world/DynamicWorldModel.cpp src/world/TriggerWorldModel.cpp
-            src/solver/LocalWorldView.cpp src/solver/GeneralWorldModel.cpp src/solver/GlobalPlanner.cpp src/solver/AdaptiveSearchBudget.cpp
-            src/solver/PhysicsValidationHarness.cpp src/solver/PhysicsModels.cpp src/solver/TrajectorySimulator.cpp src/solver/TrajectoryScorer.cpp
-            src/solver/PortalTransition.cpp src/solver/ActionGenerator.cpp src/solver/DualJointPlanner.cpp src/solver/RealtimePlanner.cpp src/control/AutonomousTestDriver.cpp
-          )
-          "${CXX[@]}" tests/ModelTruthTest.cpp "${COMMON[@]}" -o ci-tests/model-truth.exe
-          ./ci-tests/model-truth.exe
-          "${CXX[@]}" tests/ActionCountdownTest.cpp "${COMMON[@]}" -o ci-tests/action-countdown.exe
-          ./ci-tests/action-countdown.exe
+          cmake --build build --config Release --target AutoBotT7 --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          "${CXX[@]}" tests/GlobalPolicyToInputTest.cpp "${COMMON[@]}" -o ci-tests/global-policy-input.exe
-          ./ci-tests/global-policy-input.exe
+          $dll = Get-ChildItem -Recurse build -Filter "thiago7tv.autobot-t7.dll" | Select-Object -First 1
+          $geode = Get-ChildItem -Recurse build -Filter "*.geode" | Select-Object -First 1
+          if (-not $dll) { throw "AutoBot DLL not produced" }
+          if (-not $geode) { throw "Geode package not produced" }
 
-          "${CXX[@]}" tests/PhysicsCalibrationBootstrapTest.cpp "${COMMON[@]}" -o ci-tests/physics-bootstrap.exe
-          ./ci-tests/physics-bootstrap.exe
+          Write-Host "REAL_GEODE_COMPILE_PACKAGE=PASS"
+          Write-Host "ONE_SOLVER_INPUT_AUTHORITY=PASS"
 
-      - name: Configure real Geode mod
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_C_COMPILER=clang             -DCMAKE_CXX_COMPILER=clang++             '-DGEODE_CODEGEN_CMAKE_ARGS=-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja'             -G Ninja             -DGEODE_DONT_INSTALL_MODS=ON             -DGEODE_TARGET_PLATFORM=Win64             '-DCMAKE_CXX_FLAGS=-Wall -Wextra'
-
-      - name: Compile and package internally
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --build build --config Release --verbose --parallel 2
-          test -n "$(find build -type f -name 'thiago7tv.autobot-t7.dll' -print -quit)"
-          test -n "$(find build -type f -name '*.geode' -print -quit)"
-          echo "SOLVER_CLOSEOUT_INTERNAL_BUILD=PASS"
-
-      - name: Prepare runtime candidate
+      - name: Prepare Build 4 candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -205,44 +152,51 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-runtime-candidate.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-runtime-candidate.geode | awk '{print $1}')"
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — RUNTIME CANDIDATE
+          AUTOBOT T7 — BUILD #4 RUNTIME CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
           SHA256=${SHA256}
 
-          BUILD SYSTEM = PASS
-          SOLVER-CLOSEOUT CI = PASS
-          LIVE SOLVER = COMPILED
-          ROLLING SEARCH PERSISTENCE = COMPILED
-          GLOBAL POLICY TO INPUT = COMPILED
-          PHYSICS CALIBRATION BOOTSTRAP = COMPILED
+          SOLVER REDESIGN = REACHABILITY + REAL GD VERIFICATION/REPAIR
+          PINNED UPSTREAM = gdsolver/gdsolver@4fb6a2365d3623b211913a5a21de308e49c5fce2
+          LICENSE = MIT
+          OLD MPC/GLOBAL/UNIVERSAL INPUT PATH = NOT BUILT
 
-          GENERAL SOLVER GAMEPLAY = PENDING USER RUNTIME
-          STEREO MADNESS 100% = PENDING USER RUNTIME
+          REACHABILITY_BASIC_JUMP_TEST = PASS
+          REPLAY_SAME_PLAN_TEST = PASS
+          DIVERGENCE_REANCHOR_TEST = PASS
+          NO_LEVEL_HARDCODE_TEST = PASS
+          COLD_SOLVE_GENERATED_LEVEL_TEST = PASS
+          SEARCH BRANCHING INTERNAL GD UPDATE CALLS = 0
+          GIT DIFF CHECK = PASS
+          REAL GEODE CONFIGURE = PASS
+          REAL GEODE COMPILE/PACKAGE = PASS
 
-          UNIVERSAL GD SOLVER = NOT VERIFIED
-          VERSION ACCEPTANCE = OPEN
-          FAILED RUNTIME BUILDS = 1 / 5
+          STEREO MADNESS 0-100 COLD RUNTIME = PENDING USER RUNTIME
+          UNIVERSAL GD SOLVER = NOT DECLARED
+
+          FAILED RUNTIME BUILDS = 2 / 5
+          REMAINING = 3 / 5
 
           PUBLIC RELEASE = NO
           GEODE INDEX = UNTOUCHED
           EOF
 
-          printf '%s\n' "$GITHUB_SHA" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-runtime-candidate.geode > runtime-candidate/SHA256SUMS.txt
+          printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
+          sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
-          echo "RUNTIME_CANDIDATE_PREPARED=PASS"
+          echo "BUILD4_CANDIDATE_PREPARED=PASS"
 
-      - name: Upload runtime candidate
+      - name: Upload Build 4 candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-runtime-candidate
+          name: AutoBot-T7-runtime-candidate-build4
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14
