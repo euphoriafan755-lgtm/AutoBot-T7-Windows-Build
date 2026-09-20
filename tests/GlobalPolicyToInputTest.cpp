@@ -1,4 +1,4 @@
-#include "autobot/control/AutonomousTestDriver.hpp"
+#include "autobot/control/GlobalPolicyGuidance.hpp"
 #include "autobot/control/InputController.hpp"
 
 #include <cassert>
@@ -33,7 +33,7 @@ int main() {
     plan.trajectories.push_back(trajectory("LOCAL NO PRESS", false, false, 100.0));
     plan.trajectories.push_back(trajectory("GLOBAL PRESS", true, false, 80.0));
 
-    const bool applied = control::AutonomousTestDriver::applyGlobalPolicyGuidance(
+    const bool applied = control::applyGlobalPolicyGuidance(
         plan,
         true,
         false
@@ -53,7 +53,7 @@ int main() {
     // cannot be forced by global guidance.
     solver::PlanDecision veto{};
     veto.trajectories.push_back(trajectory("FATAL PRESS", true, true, 1000.0));
-    assert(!control::AutonomousTestDriver::applyGlobalPolicyGuidance(veto, true, false));
+    assert(!control::applyGlobalPolicyGuidance(veto, true, false));
 
     std::cout
         << "GLOBAL_POLICY_TO_INPUT_TEST=PASS "
