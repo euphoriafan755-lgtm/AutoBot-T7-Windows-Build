@@ -1,10 +1,21 @@
 #include "autobot/control/GlobalPolicyGuidance.hpp"
 #include "autobot/control/InputController.hpp"
 
+#include "autobot/solver/PortalTransition.hpp"
+
 #include <cassert>
 #include <iostream>
 
 using namespace autobot;
+
+namespace autobot::solver {
+PortalEffect PortalTransitionResolver::resolve(world::CollisionPrimitive const&) {
+    return PortalEffect::None;
+}
+PortalApplication PortalTransitionResolver::apply(world::CollisionPrimitive const&, SimState&) {
+    return {};
+}
+} // namespace autobot::solver
 
 namespace {
 
