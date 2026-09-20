@@ -88,6 +88,9 @@ jobs:
           "${CXX[@]}" tests/RuntimeSearchBootstrapTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/runtime-bootstrap.exe
           ./ci-tests/runtime-bootstrap.exe
 
+          "${CXX[@]}" tests/RollingSearchPersistenceTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/rolling-persistence.exe
+          ./ci-tests/rolling-persistence.exe
+
           "${CXX[@]}" tests/LiveSearchRoundtripTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/live-roundtrip.exe
           ./ci-tests/live-roundtrip.exe
 
@@ -173,6 +176,12 @@ jobs:
           "${CXX[@]}" tests/ActionCountdownTest.cpp "${COMMON[@]}" -o ci-tests/action-countdown.exe
           ./ci-tests/action-countdown.exe
 
+          "${CXX[@]}" tests/GlobalPolicyToInputTest.cpp "${COMMON[@]}" -o ci-tests/global-policy-input.exe
+          ./ci-tests/global-policy-input.exe
+
+          "${CXX[@]}" tests/PhysicsCalibrationBootstrapTest.cpp "${COMMON[@]}" -o ci-tests/physics-bootstrap.exe
+          ./ci-tests/physics-bootstrap.exe
+
       - name: Configure real Geode mod
         shell: bash
         run: |
@@ -209,13 +218,16 @@ jobs:
           BUILD SYSTEM = PASS
           SOLVER-CLOSEOUT CI = PASS
           LIVE SOLVER = COMPILED
+          ROLLING SEARCH PERSISTENCE = COMPILED
+          GLOBAL POLICY TO INPUT = COMPILED
+          PHYSICS CALIBRATION BOOTSTRAP = COMPILED
 
           GENERAL SOLVER GAMEPLAY = PENDING USER RUNTIME
           STEREO MADNESS 100% = PENDING USER RUNTIME
 
           UNIVERSAL GD SOLVER = NOT VERIFIED
           VERSION ACCEPTANCE = OPEN
-          FAILED RUNTIME BUILDS = 0 / 5
+          FAILED RUNTIME BUILDS = 1 / 5
 
           PUBLIC RELEASE = NO
           GEODE INDEX = UNTOUCHED
