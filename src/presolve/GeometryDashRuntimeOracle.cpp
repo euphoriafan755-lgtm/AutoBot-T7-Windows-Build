@@ -194,6 +194,43 @@ bool playerQuiescent(PlayerObject* p) {
         && std::abs(p->getCurrentXVelocity()) < 1e-12;
 }
 
+struct QueuedInputState {
+    int button = 0;
+    bool push = false;
+    bool player2 = false;
+    double timestamp = 0.0;
+
+    friend bool operator==(QueuedInputState const&, QueuedInputState const&) = default;
+};
+
+std::vector<QueuedInputState> captureQueuedInputs(PlayLayer* layer) {
+    std::vector<QueuedInputState> out;
+    if (!layer) return out;
+    out.reserve(layer->m_queuedButtons.size());
+    for (auto const& command : layer->m_queuedButtons) {
+        out.push_back({
+            static_cast<int>(command.m_button),
+            command.m_isPush,
+            command.m_isPlayer2,
+            command.m_timestamp,
+        });
+    }
+    return out;
+}
+
+void restoreQueuedInputs(PlayLayer* layer, std::vector<QueuedInputState> const& inputs) {
+    if (!layer) return;
+    layer->m_queuedButtons.clear();
+    for (auto const& input : inputs) {
+        PlayerButtonCommand command{};
+        command.m_button = static_cast<PlayerButton>(input.button);
+        command.m_isPush = input.push;
+        command.m_isPlayer2 = input.player2;
+        command.m_timestamp = input.timestamp;
+        layer->m_queuedButtons.push_back(command);
+    }
+}
+
 } // namespace
 
 struct GeometryDashRuntimeOracle::Impl {
@@ -211,11 +248,13 @@ struct GeometryDashRuntimeOracle::Impl {
         std::uint64_t replaySeed = 0;
         int attempts = 0;
         bool practiceMode = false;
+        bool paused = false;
         float extraDelta = 0.0f;
         float timeWarp = 1.0f;
         double levelTime = 0.0;
         float currentProgress = 0.0f;
         UniversalAction action{};
+        std::vector<QueuedInputState> queuedInputs;
         std::shared_ptr<std::vector<ObjectState> const> objectStates;
         CanonicalSections sections;
         UniversalCanonicalState canonical;
@@ -306,7 +345,14 @@ struct GeometryDashRuntimeOracle::Impl {
         s.core.push_back(static_cast<std::uint64_t>(layer->m_isPlatformer));
         s.core.push_back(bits(layer->m_gameState.m_portalY));
         s.core.push_back(static_cast<std::uint64_t>(layer->m_gameState.m_levelFlipping));
-        s.core.push_back(static_cast<std::uint64_t>(layer->m_queuedButtons.size()));
+        const auto queuedInputs = captureQueuedInputs(layer);
+        s.core.push_back(static_cast<std::uint64_t>(queuedInputs.size()));
+        for (auto const& input : queuedInputs) {
+            s.core.push_back(static_cast<std::uint64_t>(static_cast<std::uint32_t>(input.button)));
+            s.core.push_back(static_cast<std::uint64_t>(input.push));
+            s.core.push_back(static_cast<std::uint64_t>(input.player2));
+            s.core.push_back(bits(input.timestamp));
+        }
         appendPlayer(s.core, layer->m_player1);
         appendPlayer(s.core, layer->m_player2);
         appendAction(s.core, action);
@@ -464,15 +510,26 @@ struct GeometryDashRuntimeOracle::Impl {
         const bool rngOk = restored.rng == snap.sections.rng;
         const bool effectOk = restored.effect == snap.sections.effect;
         const bool dynamicOk = restored.dynamic == snap.sections.dynamic;
+        const bool queuedOk = captureQueuedInputs(layer) == snap.queuedInputs;
+        const bool attemptsOk = layer->m_attempts == snap.attempts;
+        const bool pauseOk = layer->m_isPaused == snap.paused;
+        ++validation.liveRoundTripChecks;
         validation.rngPass = validation.rngPass && rngOk;
         validation.effectStatePass = validation.effectStatePass && effectOk;
         validation.dynamicWorldPass = validation.dynamicWorldPass && dynamicOk;
-        validation.roundTripPass = validation.roundTripPass && coreOk && rngOk && effectOk && dynamicOk;
+        validation.queuedStatePass = validation.queuedStatePass && queuedOk;
+        validation.attemptStatePass = validation.attemptStatePass && attemptsOk;
+        validation.pauseStatePass = validation.pauseStatePass && pauseOk;
+        validation.roundTripPass = validation.roundTripPass
+            && coreOk && rngOk && effectOk && dynamicOk && queuedOk && attemptsOk && pauseOk;
         if (!validation.roundTripPass) {
             error = "CHECKPOINT ROUNDTRIP MISMATCH core=" + std::to_string(coreOk)
                 + " rng=" + std::to_string(rngOk)
                 + " effect=" + std::to_string(effectOk)
-                + " dynamic=" + std::to_string(dynamicOk);
+                + " dynamic=" + std::to_string(dynamicOk)
+                + " queued=" + std::to_string(queuedOk)
+                + " attempts=" + std::to_string(attemptsOk)
+                + " pause=" + std::to_string(pauseOk);
             return false;
         }
         return true;
@@ -534,11 +591,13 @@ std::optional<UniversalToken> GeometryDashRuntimeOracle::capture() {
     snap->replaySeed = replaySeed;
     snap->attempts = layer->m_attempts;
     snap->practiceMode = layer->m_isPracticeMode;
+    snap->paused = layer->m_isPaused;
     snap->extraDelta = layer->m_extraDelta;
     snap->timeWarp = layer->m_gameState.m_timeWarp;
     snap->levelTime = layer->m_gameState.m_levelTime;
     snap->currentProgress = layer->m_gameState.m_currentProgress;
     snap->action = m_impl->action;
+    snap->queuedInputs = captureQueuedInputs(layer);
     snap->sections = sections;
     snap->canonical = m_impl->makeCanonical(sections);
 
@@ -587,8 +646,8 @@ bool GeometryDashRuntimeOracle::restore(UniversalToken token) {
     layer->updatePlayerCollisionBlocks();
     layer->checkSpawnObjects();
     layer->sortSectionVector();
-    layer->m_queuedButtons.clear();
-    layer->m_isPaused = true;
+    restoreQueuedInputs(layer, snap.queuedInputs);
+    layer->m_isPaused = snap.paused;
     m_impl->action = snap.action;
     GameToolbox::fast_srand(snap.randomSeed);
     layer->m_replayRandSeed = snap.replaySeed;
