@@ -29,6 +29,19 @@ jobs:
           git diff --check origin/main...HEAD
           echo "GIT_DIFF_CHECK=PASS"
 
+      - name: Install Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L https://github.com/ninja-build/ninja/releases/latest/download/ninja-win.zip -o ninja.zip
+          7z x ninja.zip -o"$GITHUB_WORKSPACE/ninja"
+          echo "$GITHUB_WORKSPACE/ninja" >> "$GITHUB_PATH"
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Setup Geode CLI
         uses: geode-sdk/cli/.github/actions/setup@main
         with:
@@ -50,8 +63,10 @@ jobs:
       - name: Configure redesigned solver
         shell: pwsh
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
             -DGEODE_DONT_INSTALL_MODS=ON `
             -DGEODE_TARGET_PLATFORM=Win64 `
             -DAUTOBOT_BUILD_SOLVER_TESTS=ON
@@ -63,7 +78,7 @@ jobs:
         run: |
           cmake --build build --config Release --target autobot-build4-functional-tests --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "./build/Release/autobot-build4-functional-tests.exe"
+          & "./build/autobot-build4-functional-tests.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Architecture and hardcode gates
