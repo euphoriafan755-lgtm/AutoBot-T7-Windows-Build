@@ -98,6 +98,20 @@ enum class UniversalSearchStage {
     Error,
 };
 
+inline bool betterPartialSolution(
+    bool candidateComplete,
+    double candidateProgress,
+    std::size_t candidateDepth,
+    bool bestComplete,
+    double bestProgress,
+    std::size_t bestDepth
+) {
+    if (candidateComplete != bestComplete) return candidateComplete;
+    if (candidateProgress > bestProgress + 1e-9) return true;
+    if (candidateProgress + 1e-9 < bestProgress) return false;
+    return candidateDepth > bestDepth;
+}
+
 struct UniversalSearchStats {
     UniversalSearchStage stage = UniversalSearchStage::Idle;
     bool started = false;
@@ -226,6 +240,7 @@ private:
     std::uint64_t m_lifecycleGeneration = 0;
     LifecycleCallback m_lifecycleCallback;
     double m_bestProgress = 0.0;
+    bool m_bestComplete = false;
     double m_rootProgress = 0.0;
     std::chrono::steady_clock::time_point m_startedAt{};
 };
