@@ -92,7 +92,7 @@ int main() {
     const auto bytes = static_cast<long long>(plan.tellg());
 
     std::cout << std::fixed << std::setprecision(3)
-              << "SOLVE_PERF_PROFILE_BASELINE=PASS"
+              << "SOLVE_PERF_PROFILE_CURRENT=PASS"
               << " wall_s=" << sec
               << " verdict=" << dp::g_outcome.verdict
               << " cap_hits=" << dp::g_outcome.capHits

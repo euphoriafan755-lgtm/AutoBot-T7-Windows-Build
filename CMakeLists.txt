@@ -34,6 +34,27 @@ endif()
 
 set(AUTOBOT_GDSOLVER_ROOT "${autobot_gdsolver_upstream_SOURCE_DIR}")
 
+# Performance-only patch #1. The upstream parallel-dedupe implementation is
+# already order-preserving and bit-equivalent to its serial path; at the
+# runtime's base cap (2000) the old >=4096 gate made that implementation
+# unreachable. Lower only the dispatch threshold; no state transition, key,
+# pruning rule, survivor ordering, or physics constant changes.
+set(_autobot_cli "${AUTOBOT_GDSOLVER_ROOT}/dp/src/dp/cli.hpp")
+file(READ "${_autobot_cli}" _autobot_cli_text)
+set(_autobot_dedupe_old "&& kids.size() >= 4096;")
+set(_autobot_dedupe_new "&& kids.size() >= 1024;")
+string(FIND "${_autobot_cli_text}" "${_autobot_dedupe_old}" _autobot_dedupe_pos)
+if(_autobot_dedupe_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver parallel-dedupe threshold anchor not found")
+endif()
+string(REPLACE
+    "${_autobot_dedupe_old}"
+    "${_autobot_dedupe_new}"
+    _autobot_cli_text
+    "${_autobot_cli_text}"
+)
+file(WRITE "${_autobot_cli}" "${_autobot_cli_text}")
+
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.
 set(_fxcensus "${AUTOBOT_GDSOLVER_ROOT}/src/mod/fxcensus.hpp")
