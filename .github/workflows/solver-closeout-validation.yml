@@ -18,6 +18,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check origin/main...HEAD
+          echo "GIT_DIFF_CHECK=PASS"
 
       - name: Install Ninja
         shell: bash
@@ -79,6 +88,9 @@ jobs:
           "${CXX[@]}" tests/RuntimeSearchBootstrapTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/runtime-bootstrap.exe
           ./ci-tests/runtime-bootstrap.exe
 
+          "${CXX[@]}" tests/LiveSearchRoundtripTest.cpp src/presolve/UniversalSearchCore.cpp -o ci-tests/live-roundtrip.exe
+          ./ci-tests/live-roundtrip.exe
+
       - name: Existing solver gates
         shell: bash
         run: |
@@ -131,12 +143,14 @@ jobs:
 
           BUILD SYSTEM = PASS
           SOLVER-CLOSEOUT CI = PASS
+          LIVE SOLVER = COMPILED
 
           GENERAL SOLVER GAMEPLAY = PENDING USER RUNTIME
           STEREO MADNESS 100% = PENDING USER RUNTIME
 
           UNIVERSAL GD SOLVER = NOT VERIFIED
-          VERSION ACCEPTANCE = FAIL / OPEN
+          VERSION ACCEPTANCE = OPEN
+          FAILED RUNTIME BUILDS = 0 / 5
 
           PUBLIC RELEASE = NO
           GEODE INDEX = UNTOUCHED
