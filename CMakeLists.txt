@@ -758,6 +758,43 @@ if(_autobot_final_prep_end_pos EQUAL -1)
 endif()
 string(REPLACE "${_autobot_final_prep_end_old}" "${_autobot_final_prep_end_new}"
     _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
+set(_autobot_exit_profile_old [=[
+                log::info("session ended by level exit");
+                endSession("level_exit");
+]=])
+set(_autobot_exit_profile_new [=[
+                log::info("session ended by level exit");
+                if (g_cfg.dpSolve && !g_dpShowSolution)
+                    dpsolve::perfReport("INCOMPLETE");
+                endSession("level_exit");
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_exit_profile_old}" _autobot_exit_profile_pos)
+if(_autobot_exit_profile_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver level-exit profile anchor not found")
+endif()
+string(REPLACE "${_autobot_exit_profile_old}" "${_autobot_exit_profile_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
+set(_autobot_maxattempt_profile_old [=[
+        if (g_started && g_finishedAttempts >= g_cfg.maxAttempts) {
+            endSession("max_attempts");
+        }
+]=])
+set(_autobot_maxattempt_profile_new [=[
+        if (g_started && g_finishedAttempts >= g_cfg.maxAttempts) {
+            if (g_cfg.dpSolve && !g_dpShowSolution)
+                dpsolve::perfReport("INCOMPLETE");
+            endSession("max_attempts");
+        }
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_maxattempt_profile_old}" _autobot_maxattempt_profile_pos)
+if(_autobot_maxattempt_profile_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver max-attempts profile anchor not found")
+endif()
+string(REPLACE "${_autobot_maxattempt_profile_old}" "${_autobot_maxattempt_profile_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
 file(WRITE "${_autobot_play_hooks}" "${_autobot_play_hooks_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
