@@ -233,7 +233,7 @@ jobs:
 
           mkdir -p runtime-candidate
           cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode | awk '{print $1}')"
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
           AUTOBOT T7 — PUBLIC LEVEL STABILITY CANDIDATE
@@ -268,7 +268,7 @@ jobs:
           EOF
 
           printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-runtime-candidate-build4.geode > runtime-candidate/SHA256SUMS.txt
+          sha256sum runtime-candidate/AutoBot-T7-public-level-stability.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
           echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
