@@ -20,11 +20,15 @@ struct RuntimeOracleValidation {
     std::size_t rngTransitionsObserved = 0;
     std::size_t dynamicTransitionsObserved = 0;
     std::size_t inputQueueChecks = 0;
+    std::size_t liveRoundTripChecks = 0;
     bool roundTripPass = true;
     bool effectStatePass = true;
     bool rngPass = true;
     bool dynamicWorldPass = true;
     bool inputQueuePass = true;
+    bool queuedStatePass = true;
+    bool attemptStatePass = true;
+    bool pauseStatePass = true;
 };
 
 class GeometryDashRuntimeOracle final : public IUniversalStateOracle {
