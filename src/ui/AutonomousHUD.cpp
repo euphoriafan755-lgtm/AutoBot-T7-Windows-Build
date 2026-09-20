@@ -107,7 +107,7 @@ void AutonomousHUD::update(
         "{}\n"
         "GAME STATE READY: {}\n"
         "WORLD READY: {}\n"
-        "PHYSICS READY: {}\n"
+        "PHYSICS MODEL: {} | CONTROL READY: {}\n"
         "PLANNER READY: {}\n"
         "STATUS: {}\n"
         "MODEL ERROR: {:.2f}{}",
@@ -132,6 +132,7 @@ void AutonomousHUD::update(
         targetLine,
         plan.gameStateReady ? "YES" : "NO",
         plan.worldReady ? "YES" : "NO",
+        solver::toString(plan.physicsModelStatus),
         plan.physicsReady ? "YES" : "NO",
         plan.plannerReady ? "YES" : "NO",
         decision.reason.empty() ? plan.reason : decision.reason,
