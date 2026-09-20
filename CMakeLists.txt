@@ -97,3 +97,19 @@ message(STATUS "Using Geode SDK: ${AUTOBOT_GEODE_SDK}")
 
 add_subdirectory(${AUTOBOT_GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 setup_geode_mod(${PROJECT_NAME})
+
+
+option(AUTOBOT_BUILD_SOLVER_TESTS "Build Build #4 functional solver gates" OFF)
+if(AUTOBOT_BUILD_SOLVER_TESTS)
+    add_executable(autobot-build4-functional-tests
+        tests/build4/ReachabilityFunctionalTest.cpp
+    )
+    target_include_directories(autobot-build4-functional-tests PRIVATE
+        "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
+    )
+    if(MSVC)
+        target_compile_options(autobot-build4-functional-tests PRIVATE /W4)
+    else()
+        target_compile_options(autobot-build4-functional-tests PRIVATE -Wall -Wextra)
+    endif()
+endif()
