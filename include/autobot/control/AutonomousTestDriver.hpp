@@ -95,6 +95,15 @@ struct AutonomousDecision {
     bool fullPolicyReplayPassed = false;
     double simulatedCompletion = 0.0;
 
+    double liveSearchElapsed = 0.0;
+    double liveSearchExpansionsPerSecond = 0.0;
+    std::size_t liveSearchExpansions = 0;
+    std::size_t liveSearchEngineSteps = 0;
+    std::size_t liveSearchFrontier = 0;
+    std::size_t liveSearchReroots = 0;
+    double liveSearchBestProgress = 0.0;
+    bool liveGlobalPolicyAvailable = false;
+
     solver::PlanDecision plan{};
 };
 
