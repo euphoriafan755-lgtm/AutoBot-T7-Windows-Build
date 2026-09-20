@@ -1,4 +1,5 @@
 #include "autobot/solver/RealtimePlanner.hpp"
+#include "autobot/solver/PhysicsBootstrap.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -48,36 +49,7 @@ double forwardExtent(world::WorldRect const& rect) {
     return std::max(0.0, e.right - e.left);
 }
 
-double effectiveNormalizedStepDt(ModeCalibration const& calibration) {
-    const double measured = calibration.normalizedStepDt();
-    return std::isfinite(measured) && measured > 0.00001 ? measured : 1.0;
-}
 
-bool provisionalPhysicsUsable(core::PlayerState const& player) {
-    return player.mode != core::GameMode::Unknown
-        && std::isfinite(player.x)
-        && std::isfinite(player.y)
-        && std::isfinite(player.velocityX)
-        && std::isfinite(player.velocityY)
-        && std::isfinite(player.gravity)
-        && std::isfinite(player.gravityModifier)
-        && std::isfinite(player.jumpVelocity)
-        && player.objectBoundsWidth > 0.0
-        && player.objectBoundsHeight > 0.0;
-}
-
-PhysicsModelStatus physicsStatus(
-    PhysicsValidationHarness const& validation,
-    core::GameMode mode
-) {
-    if (validation.modeReady(mode)) return PhysicsModelStatus::Verified;
-    auto const& c = validation.calibration(mode);
-    if (c.timingSamples > 0 || c.horizontalScaleSamples > 0
-        || c.neutralSamples > 0 || c.inputReady()) {
-        return PhysicsModelStatus::Calibrating;
-    }
-    return PhysicsModelStatus::Provisional;
-}
 
 } // namespace
 
