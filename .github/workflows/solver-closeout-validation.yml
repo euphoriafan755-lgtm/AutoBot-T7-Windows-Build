@@ -95,6 +95,7 @@ jobs:
             src/presolve/ShadowUniversalOracle.cpp
             src/presolve/UniversalSearchCore.cpp
             src/solver/PhysicsModels.cpp
+            src/solver/PhysicsValidationHarness.cpp
             src/world/CollisionWorld.cpp
             src/world/SpatialHash.cpp
           )
