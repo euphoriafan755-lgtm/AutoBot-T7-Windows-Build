@@ -118,6 +118,8 @@ bool UniversalRuntimeSession::begin(
     m_lifecycleTrace.clear();
     m_searchSliceCount = 0;
     m_liveRerootCount = 0;
+    m_liveFramesObserved = 0;
+    m_liveFramesSinceRoot = 0;
     m_liveAccumulatedExpansions = 0;
     m_liveAccumulatedEngineSteps = 0;
     m_liveBestProgress = static_cast<double>(snapshot.levelProgress);
@@ -154,6 +156,8 @@ bool UniversalRuntimeSession::begin(
     );
 
     m_pendingLiveSnapshot = snapshot;
+    m_rootLiveSnapshot = snapshot;
+    m_lastLiveSnapshot = snapshot;
     m_pendingP1Holding = p1Holding;
     m_liveRootDirty = true;
     m_stage = UniversalRuntimeStage::Searching;
@@ -206,8 +210,12 @@ void UniversalRuntimeSession::reset(std::string_view reason) {
     m_owner = nullptr;
     m_oracle.reset();
     m_pendingLiveSnapshot = {};
+    m_rootLiveSnapshot = {};
+    m_lastLiveSnapshot = {};
     m_pendingP1Holding = false;
     m_liveRootDirty = false;
+    m_liveFramesObserved = 0;
+    m_liveFramesSinceRoot = 0;
     m_policy.clear();
     m_refinement = 0;
     m_stallRecoveryCount = 0;
@@ -228,16 +236,50 @@ void UniversalRuntimeSession::updateLiveRoot(
 ) {
     if (m_stage != UniversalRuntimeStage::Searching || !snapshot.valid) return;
 
-    if (m_pendingLiveSnapshot.valid
+    const bool sameFrame = m_pendingLiveSnapshot.valid
         && snapshot.solverSampleID == m_pendingLiveSnapshot.solverSampleID
-        && snapshot.levelTime == m_pendingLiveSnapshot.levelTime
-        && p1Holding == m_pendingP1Holding) {
+        && std::abs(snapshot.levelTime - m_pendingLiveSnapshot.levelTime) <= 1e-9;
+    if (sameFrame) {
+        m_pendingP1Holding = p1Holding;
         return;
     }
 
+    if (!m_lastLiveSnapshot.valid) {
+        m_lastLiveSnapshot = snapshot;
+        m_pendingLiveSnapshot = snapshot;
+        m_pendingP1Holding = p1Holding;
+        m_liveRootDirty = true;
+        return;
+    }
+
+    ++m_liveFramesObserved;
+    ++m_liveFramesSinceRoot;
+
+    const auto assessment = assessLiveRoot(
+        m_rootLiveSnapshot,
+        m_lastLiveSnapshot,
+        snapshot,
+        m_liveFramesSinceRoot,
+        m_policy.size()
+    );
+
     m_pendingLiveSnapshot = snapshot;
     m_pendingP1Holding = p1Holding;
-    m_liveRootDirty = true;
+    m_lastLiveSnapshot = snapshot;
+
+    if (assessment.reroot) {
+        m_liveRootDirty = true;
+        log::info(
+            "ROLLING_SEARCH_REROOT_REQUEST generation={} reason={} liveFrames={} framesSinceRoot={} "
+            "policyTicks={} rerootCount={}",
+            m_generation,
+            assessment.reason,
+            m_liveFramesObserved,
+            m_liveFramesSinceRoot,
+            m_policy.size(),
+            m_liveRerootCount
+        );
+    }
 }
 
 void UniversalRuntimeSession::accumulateCurrentSearchEpoch() {
@@ -271,6 +313,10 @@ bool UniversalRuntimeSession::rerootShadow(std::string_view reason) {
 
     m_liveRootDirty = false;
     m_fullPolicyAvailable = false;
+    m_policy.clear();
+    m_rootLiveSnapshot = m_pendingLiveSnapshot;
+    m_lastLiveSnapshot = m_pendingLiveSnapshot;
+    m_liveFramesSinceRoot = 0;
 
     const auto after = m_search.stats();
     log::info(
@@ -330,6 +376,12 @@ void UniversalRuntimeSession::searchSlice(std::size_t expansionBudget) {
         m_reason = m_fullPolicyAvailable
             ? "SHADOW GLOBAL FULL POLICY AVAILABLE; LOCAL MPC ACTIVE"
             : "SHADOW GLOBAL SEARCH READY WITHOUT POLICY; LOCAL MPC ACTIVE";
+    } else if (after.stage == UniversalSearchStage::Searching
+        || after.stage == UniversalSearchStage::Replaying) {
+        auto prefix = m_search.bestPrefix();
+        if (!prefix.empty()) m_policy = std::move(prefix);
+        m_fullPolicyAvailable = false;
+        m_reason = "SHADOW GLOBAL PREFIX + LOCAL MPC";
     } else if (after.stage == UniversalSearchStage::Error) {
         m_reason = "SHADOW GLOBAL SEARCH ERROR; LOCAL MPC CONTINUES";
         m_liveRootDirty = true;
