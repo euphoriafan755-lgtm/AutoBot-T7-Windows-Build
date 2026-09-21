@@ -249,6 +249,73 @@ jobs:
               raise SystemExit("FLIGHT RECORDER FILE/LOG DUPLICATION MISSING")
           print("FLIGHT_RECORDER_CHECKPOINT_SET_TEST=PASS")
 
+          solver_header = (upstream / "src/solver/solver.hpp").read_text(encoding="utf-8")
+          model_phases = [
+              "PRE_POIS_DUMP", "POST_POIS_DUMP",
+              "PRE_OBJECTS_DUMP", "POST_OBJECTS_DUMP",
+              "PRE_OBJRECTS_DUMP", "POST_OBJRECTS_DUMP",
+              "PRE_OBB_DUMP", "POST_OBB_DUMP",
+              "PRE_FORCEBLOCKS_DUMP", "POST_FORCEBLOCKS_DUMP",
+              "PRE_TRIGGERS_DUMP", "POST_TRIGGERS_DUMP",
+              "PRE_ROTGAMEPLAY_DUMP", "POST_ROTGAMEPLAY_DUMP",
+              "PRE_LEVELSETTINGS_DUMP", "POST_LEVELSETTINGS_DUMP",
+              "POST_BUILDPOIS_EXPORTS",
+          ]
+          phase_positions = []
+          for token in model_phases:
+              if token not in solver_header:
+                  raise SystemExit("CUSTOM MODEL BUILD PHASE CHECKPOINT MISSING: " + token)
+              phase_positions.append(solver_header.index(token))
+          if phase_positions != sorted(phase_positions):
+              raise SystemExit("CUSTOM MODEL BUILD PHASE ORDER IS WRONG")
+          print("CUSTOM_MODEL_BUILD_PHASE_TEST=PASS")
+
+          objrect_start = solver_header.index("inline void writeObjRects")
+          objrect_end = solver_header.index("// Extract orb POIs", objrect_start)
+          objrect_body = solver_header[objrect_start:objrect_end]
+          unsafe_casts = [
+              "static_cast<TeleportPortalObject*>(obj)",
+              "static_cast<EffectGameObject*>(obj)",
+              "static_cast<RotateGameplayGameObject*>(obj)",
+              "static_cast<GameOptionsTrigger*>(obj)",
+              "static_cast<GameObject*>(grp->objectAtIndex(0))",
+          ]
+          remaining = [x for x in unsafe_casts if x in objrect_body]
+          if remaining:
+              raise SystemExit("UNSAFE OBJRECT CAST REMAINS: " + ", ".join(remaining))
+          required_safe = [
+              "typeinfo_cast<TeleportPortalObject*>(obj)",
+              "typeinfo_cast<EffectGameObject*>(obj)",
+              "typeinfo_cast<RotateGameplayGameObject*>(obj)",
+              "typeinfo_cast<GameOptionsTrigger*>(obj)",
+              "typeinfo_cast<GameObject*>(raw)",
+          ]
+          missing_safe = [x for x in required_safe if x not in objrect_body]
+          if missing_safe:
+              raise SystemExit("SAFE OBJRECT CAST GUARD MISSING: " + ", ".join(missing_safe))
+          if "OBJRECT_TYPE_MISMATCH" not in objrect_body or "OBJRECT_SPECIAL" not in objrect_body:
+              raise SystemExit("OBJRECT SPECIAL-OP DIAGNOSTIC MISSING")
+          print("CUSTOM_OBJRECT_SAFE_CAST_TEST=PASS")
+
+          geometry_pairs = [
+              ("PRE_POIS_DUMP", "POST_POIS_DUMP"),
+              ("PRE_OBJECTS_DUMP", "POST_OBJECTS_DUMP"),
+              ("PRE_OBJRECTS_DUMP", "POST_OBJRECTS_DUMP"),
+              ("PRE_OBB_DUMP", "POST_OBB_DUMP"),
+              ("PRE_FORCEBLOCKS_DUMP", "POST_FORCEBLOCKS_DUMP"),
+              ("PRE_TRIGGERS_DUMP", "POST_TRIGGERS_DUMP"),
+              ("PRE_ROTGAMEPLAY_DUMP", "POST_ROTGAMEPLAY_DUMP"),
+              ("PRE_LEVELSETTINGS_DUMP", "POST_LEVELSETTINGS_DUMP"),
+          ]
+          for pre, post in geometry_pairs:
+              if solver_header.index(pre) >= solver_header.index(post):
+                  raise SystemExit(f"GEOMETRY EXPORT LIFECYCLE BROKEN: {pre} !< {post}")
+          if "obj->m_groups->size()" not in solver_header:
+              raise SystemExit("GROUP VECTOR BOUNDS GUARD MISSING")
+          if "POST_BUILDPOIS_EXPORTS" not in solver_header:
+              raise SystemExit("BUILDPOIS RETURN CHECKPOINT MISSING")
+          print("CUSTOM_GEOMETRY_EXPORT_LIFECYCLE_TEST=PASS")
+
           hud = (upstream / "src/mod/hud.hpp").read_text(encoding="utf-8")
           panel = (upstream / "src/mod/ui_panel.hpp").read_text(encoding="utf-8")
           for token in ["GDSOLVER BOT - SOLVING", "GDSOLVER BOT - REPLAY"]:
@@ -286,11 +353,11 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v2.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v2.geode | awk '{print $1}')"
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v3.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v3.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — PUBLIC LEVEL STABILITY V2 CANDIDATE
+          AUTOBOT T7 — PUBLIC LEVEL STABILITY V3 CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
@@ -322,7 +389,7 @@ jobs:
           EOF
 
           printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v2.geode > runtime-candidate/SHA256SUMS.txt
+          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v3.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
           echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
@@ -330,7 +397,7 @@ jobs:
       - name: Upload public-level stability candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-public-level-stability-v2
+          name: AutoBot-T7-public-level-stability-v3
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14
