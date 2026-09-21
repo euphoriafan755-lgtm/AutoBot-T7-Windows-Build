@@ -835,6 +835,13 @@ inline void crashTrace(const std::string& checkpoint) {
         log::warn("AUTOBOT_CRASH_TRACE durable flush failed for {}", path.string());
 }
 
+// Detached-worker diagnostics are isolated from the main recorder and from
+// Geode/Cocos logging. MAIN constructs the path before std::thread starts.
+inline void workerCrashTrace(const std::filesystem::path& path,
+                             std::string_view checkpoint) noexcept {
+    (void)autobot::diag::appendWorkerCrashSafeLine(path, checkpoint);
+}
+
 inline void crashTraceOnce(std::atomic<bool>& flag, const std::string& checkpoint) {
     bool expected = false;
     if (flag.compare_exchange_strong(expected, true))
@@ -1293,9 +1300,12 @@ string(REPLACE "${_autobot_object_extract_old}" "${_autobot_object_extract_new}"
 
 set(_autobot_initial_search_old "                    g_rc = dpbridge::solveInProcess(g_csv, a0);")
 set(_autobot_initial_search_new [=[
-                    crashTrace("PRE_INITIAL_SEARCH thread=WORKER");
+                    workerCrashTrace(workerTracePath, "PRE_INITIAL_SEARCH thread=WORKER");
                     g_rc = dpbridge::solveInProcess(g_csv, a0);
-                    crashTrace(fmt::format("POST_INITIAL_SEARCH rc={} thread=WORKER", g_rc));
+                    char searchDone[96]{};
+                    std::snprintf(searchDone, sizeof searchDone,
+                                  "POST_INITIAL_SEARCH rc=%d thread=WORKER", g_rc);
+                    workerCrashTrace(workerTracePath, searchDone);
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_initial_search_old}" _autobot_initial_search_pos)
 if(_autobot_initial_search_pos EQUAL -1)
@@ -1617,10 +1627,18 @@ set(_autobot_thread_begin_old [=[
 ]=])
 set(_autobot_thread_begin_new [=[
     const int gen = g_generation.load();   // this session's generation, read on the main thread
+    const auto workerTracePath =
+        std::filesystem::path(DATA_DIR) / "autobot-worker-crash-trace.txt";
+    if (kind == JobFirstSolve) {
+        std::error_code workerTraceEc;
+        std::filesystem::remove(workerTracePath, workerTraceEc);
+    }
     crashTrace(fmt::format("PRE_THREAD_CREATE kind={} generation={} thread=MAIN", kind, gen));
-    std::thread([kind, arg, gen]() {
-        crashTrace(fmt::format(
-            "WORKER_ENTER kind={} generation={} thread=WORKER", kind, gen));
+    std::thread([kind, arg, gen, workerTracePath]() {
+        char workerEnter[128]{};
+        std::snprintf(workerEnter, sizeof workerEnter,
+                      "WORKER_ENTER kind=%d generation=%d thread=WORKER", kind, gen);
+        workerCrashTrace(workerTracePath, workerEnter);
         bool ok = false;
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_thread_begin_old}" _autobot_thread_begin_pos)
@@ -1638,17 +1656,22 @@ set(_autobot_worker_prep_old [=[
 ]=])
 set(_autobot_worker_prep_new [=[
                     std::error_code ec;
-                    crashTrace("PRE_PLAN_REMOVE thread=WORKER");
+                    workerCrashTrace(workerTracePath, "PRE_PLAN_REMOVE thread=WORKER");
                     std::filesystem::remove(g_planPath, ec);
-                    crashTrace(fmt::format(
-                        "POST_PLAN_REMOVE ec={} thread=WORKER", ec.value()));
-                    crashTrace("PRE_BASE_ARGS thread=WORKER");
+                    char planRemoved[96]{};
+                    std::snprintf(planRemoved, sizeof planRemoved,
+                                  "POST_PLAN_REMOVE ec=%d thread=WORKER", ec.value());
+                    workerCrashTrace(workerTracePath, planRemoved);
+                    workerCrashTrace(workerTracePath, "PRE_BASE_ARGS thread=WORKER");
                     const std::vector<std::string> a0 = baseArgs(g_planPath);
-                    crashTrace(fmt::format(
-                        "POST_BASE_ARGS argc={} thread=WORKER", a0.size()));
-                    crashTrace("PRE_LOG_SOLVER_ARGS thread=WORKER");
-                    logSolverArgs(a0);
-                    crashTrace("POST_LOG_SOLVER_ARGS thread=WORKER");
+                    char baseArgsDone[96]{};
+                    std::snprintf(baseArgsDone, sizeof baseArgsDone,
+                                  "POST_BASE_ARGS argc=%zu thread=WORKER", a0.size());
+                    workerCrashTrace(workerTracePath, baseArgsDone);
+                    workerCrashTrace(workerTracePath, "PRE_LOG_SOLVER_ARGS thread=WORKER");
+                    // logSolverArgs is reporting only: result.txt, signatures and
+                    // optional snapshots. Solver argv/state are not modified.
+                    workerCrashTrace(workerTracePath, "POST_LOG_SOLVER_ARGS thread=WORKER");
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_worker_prep_old}" _autobot_worker_prep_pos)
 if(_autobot_worker_prep_pos EQUAL -1)
@@ -1696,6 +1719,11 @@ if(_autobot_candidate_verify_pos EQUAL -1)
     message(FATAL_ERROR "Pinned gdsolver candidate-verify anchor not found")
 endif()
 string(REPLACE "${_autobot_candidate_verify_old}" "${_autobot_candidate_verify_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+# V5: detached workers do not run reporting-only logSolverArgs.
+# baseArgs and solveInProcess stay untouched.
+string(REPLACE "logSolverArgs(a);" "/* AutoBot v5: detached-worker solver-args reporting disabled. */"
     _autobot_repair_text "${_autobot_repair_text}")
 
 file(WRITE "${_autobot_repair}" "${_autobot_repair_text}")
@@ -2338,6 +2366,9 @@ if(AUTOBOT_BUILD_SOLVER_TESTS)
     add_executable(autobot-flight-recorder-test
         tests/diagnostics/FlightRecorderFlushTest.cpp
     )
+    add_executable(autobot-crash-recorder-concurrency-test
+        tests/diagnostics/CrashRecorderConcurrencyTest.cpp
+    )
     target_include_directories(autobot-build4-functional-tests PRIVATE
         "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
     )
@@ -2347,13 +2378,18 @@ if(AUTOBOT_BUILD_SOLVER_TESTS)
     target_include_directories(autobot-flight-recorder-test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
+    target_include_directories(autobot-crash-recorder-concurrency-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
     if(MSVC)
         target_compile_options(autobot-build4-functional-tests PRIVATE /W4)
         target_compile_options(autobot-solve-perf-profile PRIVATE /O2 /W4)
         target_compile_options(autobot-flight-recorder-test PRIVATE /W4)
+        target_compile_options(autobot-crash-recorder-concurrency-test PRIVATE /W4)
     else()
         target_compile_options(autobot-build4-functional-tests PRIVATE -Wall -Wextra)
         target_compile_options(autobot-solve-perf-profile PRIVATE -O3 -Wall -Wextra)
         target_compile_options(autobot-flight-recorder-test PRIVATE -Wall -Wextra)
+        target_compile_options(autobot-crash-recorder-concurrency-test PRIVATE -Wall -Wextra)
     endif()
 endif()

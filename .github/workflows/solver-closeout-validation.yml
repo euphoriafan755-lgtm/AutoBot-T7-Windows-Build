@@ -89,6 +89,14 @@ jobs:
           & "./build/autobot-flight-recorder-test.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Crash recorder main-worker concurrency gate
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target autobot-crash-recorder-concurrency-test --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "./build/autobot-crash-recorder-concurrency-test.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Baseline solve performance profile
         shell: pwsh
         run: |
@@ -427,7 +435,8 @@ jobs:
           if worker_seq != sorted(worker_seq):
               raise SystemExit("WORKER HANDOFF CHECKPOINT ORDER IS WRONG")
           if not (
-              spawn_body.index("PRE_THREAD_CREATE") < spawn_body.index("std::thread([kind, arg, gen]")
+              spawn_body.index("PRE_THREAD_CREATE")
+              < spawn_body.index("std::thread([kind, arg, gen, workerTracePath]")
               < spawn_body.index("WORKER_ENTER")
           ):
               raise SystemExit("THREAD CREATION/WORKER ENTRY IS NOT BRACKETED")
@@ -436,11 +445,14 @@ jobs:
               < spawn_body.index("POST_BASE_ARGS")
           ):
               raise SystemExit("baseArgs IS NOT BRACKETED")
+          if "logSolverArgs(a0)" in spawn_body:
+              raise SystemExit("UNSAFE logSolverArgs CALL REMAINS IN FIRST-SOLVE WORKER")
           if not (
-              spawn_body.index("PRE_LOG_SOLVER_ARGS") < spawn_body.index("logSolverArgs(a0)")
+              spawn_body.index("PRE_LOG_SOLVER_ARGS")
               < spawn_body.index("POST_LOG_SOLVER_ARGS")
+              < spawn_body.index("PRE_INITIAL_SEARCH")
           ):
-              raise SystemExit("logSolverArgs IS NOT BRACKETED")
+              raise SystemExit("WORKER REPORTING BYPASS/INITIAL SEARCH ORDER IS WRONG")
           if not (
               spawn_body.index("PRE_INITIAL_SEARCH") < spawn_body.index("dpbridge::solveInProcess(g_csv, a0)")
               < spawn_body.index("POST_INITIAL_SEARCH")
@@ -452,19 +464,62 @@ jobs:
           durable_required = ["std::fwrite", "std::fflush", "_commit(_fileno(file))", "std::fclose"]
           missing_durable = [x for x in durable_required if x not in flight]
           if missing_durable:
-              raise SystemExit("DURABLE FLIGHT RECORDER PRIMITIVE MISSING: " + ", ".join(missing_durable))
-          all_start_flight = post_csv_required + handoff_required
-          missing_crashtrace = [
-              x for x in all_start_flight
+              raise SystemExit("DURABLE MAIN FLIGHT RECORDER PRIMITIVE MISSING: " + ", ".join(missing_durable))
+
+          worker_durable = [
+              "appendWorkerCrashSafeLine", "std::mutex", "CreateFileW",
+              "FILE_APPEND_DATA", "WriteFile", "FlushFileBuffers", "CloseHandle", "noexcept"
+          ]
+          missing_worker_durable = [x for x in worker_durable if x not in flight]
+          if missing_worker_durable:
+              raise SystemExit("DURABLE WORKER RECORDER PRIMITIVE MISSING: "
+                               + ", ".join(missing_worker_durable))
+
+          missing_main_crashtrace = [
+              x for x in post_csv_required + main_handoff
               if ("crashTrace" not in (start_body if x in post_csv_required else spawn_body)[
                     max(0, (start_body if x in post_csv_required else spawn_body).index(x) - 120):
-                    (start_body if x in post_csv_required else spawn_body).index(x) + 260
+                    (start_body if x in post_csv_required else spawn_body).index(x) + 300
                  ])
           ]
-          if missing_crashtrace:
-              raise SystemExit("START FLIGHT CHECKPOINT NOT EMITTED THROUGH crashTrace: "
-                               + ", ".join(missing_crashtrace))
+          if missing_main_crashtrace:
+              raise SystemExit("MAIN START FLIGHT CHECKPOINT NOT EMITTED THROUGH crashTrace: "
+                               + ", ".join(missing_main_crashtrace))
+
+          missing_worker_trace = [
+              x for x in worker_handoff
+              if "workerCrashTrace" not in spawn_body[
+                    max(0, spawn_body.index(x) - 180):spawn_body.index(x) + 360
+                 ]
+          ]
+          if missing_worker_trace:
+              raise SystemExit("WORKER CHECKPOINT NOT EMITTED THROUGH PRIVATE RECORDER: "
+                               + ", ".join(missing_worker_trace))
           print("SOLVER_START_FLIGHT_CHECKPOINT_TEST=PASS")
+
+          config_worker_pos = config.index("inline void workerCrashTrace")
+          config_worker_end = config.index("inline void crashTraceOnce", config_worker_pos)
+          worker_diag_helper = config[config_worker_pos:config_worker_end]
+          bad_worker_diag = [
+              x for x in ["log::", "resolveDataDir", "geode::", "cocos2d::"]
+              if x in worker_diag_helper
+          ]
+          if bad_worker_diag:
+              raise SystemExit("WORKER DIAGNOSTICS TOUCH GEODE/MAIN LOGGER: "
+                               + ", ".join(bad_worker_diag))
+
+          worker_lambda_pos = spawn_body.index("std::thread([kind, arg, gen, workerTracePath]")
+          worker_lambda_end = spawn_body.index("}).detach();", worker_lambda_pos)
+          worker_lambda = spawn_body[worker_lambda_pos:worker_lambda_end]
+          if 'crashTrace("' in worker_lambda or "log::" in worker_lambda:
+              raise SystemExit("WORKER LAMBDA STILL USES MAIN/GEODE DIAGNOSTIC LOGGER")
+          if "autobot-worker-crash-trace.txt" not in spawn_body:
+              raise SystemExit("PRIVATE WORKER CRASH TRACE PATH MISSING")
+          if "autobot-crash-trace.txt" in worker_lambda:
+              raise SystemExit("WORKER STILL REFERENCES MAIN CRASH TRACE PATH")
+          if "logSolverArgs(a0)" in worker_lambda:
+              raise SystemExit("FIRST-SOLVE WORKER STILL RUNS logSolverArgs")
+          print("WORKER_DIAGNOSTICS_NO_GEODE_LOG_TEST=PASS")
 
           hud = (upstream / "src/mod/hud.hpp").read_text(encoding="utf-8")
           panel = (upstream / "src/mod/ui_panel.hpp").read_text(encoding="utf-8")
@@ -503,11 +558,11 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v4.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v4.geode | awk '{print $1}')"
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v5.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v5.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — PUBLIC LEVEL STABILITY V4 CANDIDATE
+          AUTOBOT T7 — PUBLIC LEVEL STABILITY V5 CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
@@ -543,7 +598,7 @@ jobs:
           EOF
 
           printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v4.geode > runtime-candidate/SHA256SUMS.txt
+          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v5.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
           echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
@@ -551,7 +606,7 @@ jobs:
       - name: Upload public-level stability candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-public-level-stability-v4
+          name: AutoBot-T7-public-level-stability-v5
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14
