@@ -316,6 +316,156 @@ jobs:
               raise SystemExit("BUILDPOIS RETURN CHECKPOINT MISSING")
           print("CUSTOM_GEOMETRY_EXPORT_LIFECYCLE_TEST=PASS")
 
+          start_pos = repair.index("inline void start(GJBaseGameLayer* l)")
+          start_end = repair.index("// One line per iteration", start_pos)
+          start_body = repair[start_pos:start_end]
+
+          post_csv_required = [
+              "POST_GCSV_BUILD",
+              "PRE_LOAD_MODE_PORTALS", "POST_LOAD_MODE_PORTALS",
+              "PRE_LOAD_ROT_OBJS", "POST_LOAD_ROT_OBJS",
+              "PRE_ROTSEED_RESET", "POST_ROTSEED_RESET",
+              "PRE_CHECK_SUBSCRIBE", "POST_CHECK_SUBSCRIBE",
+              "PRE_CANCEL_SEARCH_START", "POST_CANCEL_SEARCH_START",
+              "PRE_PATH_INIT", "POST_PATH_INIT",
+              "PRE_DIRECTORY_CLEANUP", "POST_DIRECTORY_CLEANUP",
+              "PRE_STALE_FILE_CLEANUP", "POST_STALE_FILE_CLEANUP",
+              "PRE_RUN_STATE_RESET", "POST_RUN_STATE_RESET",
+              "PRE_HORIZON_INIT", "POST_HORIZON_INIT",
+              "PRE_ANCHORS_RESET", "POST_ANCHORS_RESET",
+              "PRE_START_RESULT_WRITE", "POST_START_RESULT_WRITE",
+              "PRE_BOOTSTRAP_CHECK", "POST_BOOTSTRAP_CHECK",
+              "PRE_BEGIN_FIRST_ATTEMPT", "POST_BEGIN_FIRST_ATTEMPT",
+          ]
+          missing_post_csv = [x for x in post_csv_required if x not in start_body]
+          if missing_post_csv:
+              raise SystemExit("SOLVER START POST-CSV CHECKPOINT MISSING: " + ", ".join(missing_post_csv))
+          for token in post_csv_required:
+              pos = start_body.index(token)
+              tail = start_body[pos:pos + 220]
+              if "thread=MAIN" not in tail:
+                  raise SystemExit("SOLVER START MAIN THREAD TAG MISSING NEAR: " + token)
+          print("SOLVER_START_POST_CSV_PHASE_TEST=PASS")
+
+          main_sequence = [
+              "POST_GCSV_BUILD",
+              "PRE_LOAD_MODE_PORTALS", "POST_LOAD_MODE_PORTALS",
+              "PRE_LOAD_ROT_OBJS", "POST_LOAD_ROT_OBJS",
+              "PRE_ROTSEED_RESET", "POST_ROTSEED_RESET",
+              "PRE_CHECK_SUBSCRIBE", "POST_CHECK_SUBSCRIBE",
+              "PRE_CANCEL_SEARCH_START", "POST_CANCEL_SEARCH_START",
+              "PRE_PATH_INIT", "POST_PATH_INIT",
+              "PRE_DIRECTORY_CLEANUP", "POST_DIRECTORY_CLEANUP",
+              "PRE_STALE_FILE_CLEANUP", "POST_STALE_FILE_CLEANUP",
+              "PRE_RUN_STATE_RESET",
+              "PRE_HORIZON_INIT", "POST_HORIZON_INIT",
+              "POST_RUN_STATE_RESET",
+              "PRE_ANCHORS_RESET", "POST_ANCHORS_RESET",
+              "PRE_START_RESULT_WRITE", "POST_START_RESULT_WRITE",
+              "PRE_BOOTSTRAP_CHECK", "POST_BOOTSTRAP_CHECK",
+              "PRE_BEGIN_FIRST_ATTEMPT", "POST_BEGIN_FIRST_ATTEMPT",
+          ]
+          seq_pos = [start_body.index(x) for x in main_sequence]
+          if seq_pos != sorted(seq_pos):
+              raise SystemExit("SOLVER START INIT CHECKPOINT ORDER IS WRONG")
+          if not (
+              start_body.index("PRE_LOAD_MODE_PORTALS") < start_body.index("loadModePortals(g_csv)")
+              < start_body.index("POST_LOAD_MODE_PORTALS")
+          ):
+              raise SystemExit("loadModePortals IS NOT BRACKETED")
+          if not (
+              start_body.index("PRE_LOAD_ROT_OBJS") < start_body.index("loadRotObjs(g_csv)")
+              < start_body.index("POST_LOAD_ROT_OBJS")
+          ):
+              raise SystemExit("loadRotObjs IS NOT BRACKETED")
+          if not (
+              start_body.index("PRE_ROTSEED_RESET") < start_body.index("rotSeedLevelReset()")
+              < start_body.index("POST_ROTSEED_RESET")
+          ):
+              raise SystemExit("rotSeedLevelReset IS NOT BRACKETED")
+          print("SOLVER_START_INIT_SEQUENCE_TEST=PASS")
+
+          spawn_pos = repair.index("inline void spawn(int kind")
+          spawn_end = repair.index("// What begins the run:", spawn_pos)
+          spawn_body = repair[spawn_pos:spawn_end]
+          handoff_required = [
+              "SPAWN_ENTER",
+              "PRE_SPAWN_STATE_RESET", "POST_SPAWN_STATE_RESET",
+              "PRE_CK_MUTEX_RESET", "POST_CK_MUTEX_RESET",
+              "PRE_SPAWN_CANCEL_SEARCH", "POST_SPAWN_CANCEL_SEARCH",
+              "PRE_THREAD_CREATE", "POST_THREAD_CREATE",
+              "WORKER_ENTER",
+              "PRE_PLAN_REMOVE", "POST_PLAN_REMOVE",
+              "PRE_BASE_ARGS", "POST_BASE_ARGS",
+              "PRE_LOG_SOLVER_ARGS", "POST_LOG_SOLVER_ARGS",
+              "PRE_INITIAL_SEARCH", "POST_INITIAL_SEARCH",
+          ]
+          missing_handoff = [x for x in handoff_required if x not in spawn_body]
+          if missing_handoff:
+              raise SystemExit("SOLVER WORKER HANDOFF CHECKPOINT MISSING: " + ", ".join(missing_handoff))
+          main_handoff = [
+              "SPAWN_ENTER", "PRE_SPAWN_STATE_RESET", "POST_SPAWN_STATE_RESET",
+              "PRE_CK_MUTEX_RESET", "POST_CK_MUTEX_RESET",
+              "PRE_SPAWN_CANCEL_SEARCH", "POST_SPAWN_CANCEL_SEARCH",
+              "PRE_THREAD_CREATE", "POST_THREAD_CREATE",
+          ]
+          worker_handoff = [
+              "WORKER_ENTER", "PRE_PLAN_REMOVE", "POST_PLAN_REMOVE",
+              "PRE_BASE_ARGS", "POST_BASE_ARGS",
+              "PRE_LOG_SOLVER_ARGS", "POST_LOG_SOLVER_ARGS",
+              "PRE_INITIAL_SEARCH", "POST_INITIAL_SEARCH",
+          ]
+          for token in main_handoff:
+              p = spawn_body.index(token)
+              if "thread=MAIN" not in spawn_body[p:p + 220]:
+                  raise SystemExit("MAIN THREAD TAG MISSING NEAR: " + token)
+          for token in worker_handoff:
+              p = spawn_body.index(token)
+              if "thread=WORKER" not in spawn_body[p:p + 220]:
+                  raise SystemExit("WORKER THREAD TAG MISSING NEAR: " + token)
+          worker_seq = [spawn_body.index(x) for x in worker_handoff]
+          if worker_seq != sorted(worker_seq):
+              raise SystemExit("WORKER HANDOFF CHECKPOINT ORDER IS WRONG")
+          if not (
+              spawn_body.index("PRE_THREAD_CREATE") < spawn_body.index("std::thread([kind, arg, gen]")
+              < spawn_body.index("WORKER_ENTER")
+          ):
+              raise SystemExit("THREAD CREATION/WORKER ENTRY IS NOT BRACKETED")
+          if not (
+              spawn_body.index("PRE_BASE_ARGS") < spawn_body.index("baseArgs(g_planPath)")
+              < spawn_body.index("POST_BASE_ARGS")
+          ):
+              raise SystemExit("baseArgs IS NOT BRACKETED")
+          if not (
+              spawn_body.index("PRE_LOG_SOLVER_ARGS") < spawn_body.index("logSolverArgs(a0)")
+              < spawn_body.index("POST_LOG_SOLVER_ARGS")
+          ):
+              raise SystemExit("logSolverArgs IS NOT BRACKETED")
+          if not (
+              spawn_body.index("PRE_INITIAL_SEARCH") < spawn_body.index("dpbridge::solveInProcess(g_csv, a0)")
+              < spawn_body.index("POST_INITIAL_SEARCH")
+          ):
+              raise SystemExit("INITIAL solveInProcess IS NOT BRACKETED")
+          print("SOLVER_WORKER_HANDOFF_TEST=PASS")
+
+          flight = (root / "src/diagnostics/flight_recorder_core.hpp").read_text(encoding="utf-8")
+          durable_required = ["std::fwrite", "std::fflush", "_commit(_fileno(file))", "std::fclose"]
+          missing_durable = [x for x in durable_required if x not in flight]
+          if missing_durable:
+              raise SystemExit("DURABLE FLIGHT RECORDER PRIMITIVE MISSING: " + ", ".join(missing_durable))
+          all_start_flight = post_csv_required + handoff_required
+          missing_crashtrace = [
+              x for x in all_start_flight
+              if ("crashTrace" not in (start_body if x in post_csv_required else spawn_body)[
+                    max(0, (start_body if x in post_csv_required else spawn_body).index(x) - 120):
+                    (start_body if x in post_csv_required else spawn_body).index(x) + 260
+                 ])
+          ]
+          if missing_crashtrace:
+              raise SystemExit("START FLIGHT CHECKPOINT NOT EMITTED THROUGH crashTrace: "
+                               + ", ".join(missing_crashtrace))
+          print("SOLVER_START_FLIGHT_CHECKPOINT_TEST=PASS")
+
           hud = (upstream / "src/mod/hud.hpp").read_text(encoding="utf-8")
           panel = (upstream / "src/mod/ui_panel.hpp").read_text(encoding="utf-8")
           for token in ["GDSOLVER BOT - SOLVING", "GDSOLVER BOT - REPLAY"]:
@@ -353,11 +503,11 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v3.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v3.geode | awk '{print $1}')"
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v4.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v4.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — PUBLIC LEVEL STABILITY V3 CANDIDATE
+          AUTOBOT T7 — PUBLIC LEVEL STABILITY V4 CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
@@ -377,6 +527,10 @@ jobs:
           GIT DIFF CHECK = PASS
           REAL GEODE CONFIGURE = PASS
           REAL GEODE COMPILE/PACKAGE = PASS
+          SOLVER_START_POST_CSV_PHASE_TEST = PASS
+          SOLVER_START_INIT_SEQUENCE_TEST = PASS
+          SOLVER_WORKER_HANDOFF_TEST = PASS
+          SOLVER_START_FLIGHT_CHECKPOINT_TEST = PASS
 
           STEREO MADNESS 0-100 COLD RUNTIME = PENDING USER RUNTIME
           UNIVERSAL GD SOLVER = NOT DECLARED
@@ -389,7 +543,7 @@ jobs:
           EOF
 
           printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v3.geode > runtime-candidate/SHA256SUMS.txt
+          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v4.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
           echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
@@ -397,7 +551,7 @@ jobs:
       - name: Upload public-level stability candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-public-level-stability-v3
+          name: AutoBot-T7-public-level-stability-v4
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14
