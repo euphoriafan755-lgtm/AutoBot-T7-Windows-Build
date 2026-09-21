@@ -1277,11 +1277,12 @@ set(_autobot_object_extract_old [=[
     g_csv = oss.str();
 ]=])
 set(_autobot_object_extract_new [=[
-    crashTrace("PRE_OBJECT_EXTRACTION");
+    crashTrace("PRE_OBJECT_EXTRACTION thread=MAIN");
     std::ostringstream oss;
     solver::writeObjRects(oss, l);
     g_csv = oss.str();
-    crashTrace(fmt::format("POST_OBJECT_EXTRACTION csvBytes={}", g_csv.size()));
+    crashTrace(fmt::format("POST_OBJECT_EXTRACTION csvBytes={} thread=MAIN", g_csv.size()));
+    crashTrace(fmt::format("POST_GCSV_BUILD bytes={} thread=MAIN", g_csv.size()));
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_object_extract_old}" _autobot_object_extract_pos)
 if(_autobot_object_extract_pos EQUAL -1)
@@ -1292,9 +1293,9 @@ string(REPLACE "${_autobot_object_extract_old}" "${_autobot_object_extract_new}"
 
 set(_autobot_initial_search_old "                    g_rc = dpbridge::solveInProcess(g_csv, a0);")
 set(_autobot_initial_search_new [=[
-                    crashTrace("PRE_INITIAL_SEARCH");
+                    crashTrace("PRE_INITIAL_SEARCH thread=WORKER");
                     g_rc = dpbridge::solveInProcess(g_csv, a0);
-                    crashTrace(fmt::format("POST_INITIAL_SEARCH rc={}", g_rc));
+                    crashTrace(fmt::format("POST_INITIAL_SEARCH rc={} thread=WORKER", g_rc));
 ]=])
 string(FIND "${_autobot_repair_text}" "${_autobot_initial_search_old}" _autobot_initial_search_pos)
 if(_autobot_initial_search_pos EQUAL -1)
@@ -1302,6 +1303,379 @@ if(_autobot_initial_search_pos EQUAL -1)
 endif()
 string(REPLACE "${_autobot_initial_search_old}" "${_autobot_initial_search_new}"
     _autobot_repair_text "${_autobot_repair_text}")
+
+
+# Stability v4: bracket every post-g_csv initialization phase and the
+# main-thread -> detached-worker handoff. Diagnostic-only: no solver policy changes.
+set(_autobot_post_csv_old [=[
+    loadModePortals(g_csv);    // where the mode portals are; see missedPortalTick
+    loadRotObjs(g_csv);        // ...and the 2900s, for --spentrot (see spentRotArg)
+    rotSeedLevelReset();       // ...and cfg dprotseed's queue order and witnesses
+]=])
+set(_autobot_post_csv_new [=[
+    crashTrace("PRE_LOAD_MODE_PORTALS thread=MAIN");
+    loadModePortals(g_csv);    // where the mode portals are; see missedPortalTick
+    crashTrace(fmt::format("POST_LOAD_MODE_PORTALS count={} thread=MAIN", g_modePortals.size()));
+    crashTrace("PRE_LOAD_ROT_OBJS thread=MAIN");
+    loadRotObjs(g_csv);        // ...and the 2900s, for --spentrot (see spentRotArg)
+    crashTrace(fmt::format(
+        "POST_LOAD_ROT_OBJS rotObjs={} touchToggles={} thread=MAIN",
+        g_rotObjs.size(), g_touchToggles.size()));
+    crashTrace("PRE_ROTSEED_RESET thread=MAIN");
+    rotSeedLevelReset();       // ...and cfg dprotseed's queue order and witnesses
+    crashTrace("POST_ROTSEED_RESET thread=MAIN");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_post_csv_old}" _autobot_post_csv_pos)
+if(_autobot_post_csv_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver post-g_csv phase anchor not found")
+endif()
+string(REPLACE "${_autobot_post_csv_old}" "${_autobot_post_csv_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_subscribe_cancel_old [=[
+    dpbridge::checkSubscribe(g_cfg.dpCheck);
+    dpbridge::cancelSearch(false);
+]=])
+set(_autobot_subscribe_cancel_new [=[
+    crashTrace("PRE_CHECK_SUBSCRIBE thread=MAIN");
+    dpbridge::checkSubscribe(g_cfg.dpCheck);
+    crashTrace("POST_CHECK_SUBSCRIBE thread=MAIN");
+    crashTrace("PRE_CANCEL_SEARCH_START thread=MAIN");
+    dpbridge::cancelSearch(false);
+    crashTrace("POST_CANCEL_SEARCH_START thread=MAIN");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_subscribe_cancel_old}" _autobot_subscribe_cancel_pos)
+if(_autobot_subscribe_cancel_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver subscribe/cancel start anchor not found")
+endif()
+string(REPLACE "${_autobot_subscribe_cancel_old}" "${_autobot_subscribe_cancel_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_path_init_old [=[
+    g_planPath = std::string(DATA_DIR) + "/dp_plan.txt";
+    g_tailPath = std::string(DATA_DIR) + "/dp_tail.txt";
+]=])
+set(_autobot_path_init_new [=[
+    crashTrace("PRE_PATH_INIT thread=MAIN");
+    g_planPath = std::string(DATA_DIR) + "/dp_plan.txt";
+    g_tailPath = std::string(DATA_DIR) + "/dp_tail.txt";
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_path_init_old}" _autobot_path_init_pos)
+if(_autobot_path_init_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver path-init begin anchor not found")
+endif()
+string(REPLACE "${_autobot_path_init_old}" "${_autobot_path_init_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_path_init_end_old [=[
+    g_groupsBootPath = std::string(DATA_DIR) + "/dp_groups_boot.txt";
+    // ...and so are the per-iteration plan and tail files this run is about to
+]=])
+set(_autobot_path_init_end_new [=[
+    g_groupsBootPath = std::string(DATA_DIR) + "/dp_groups_boot.txt";
+    crashTrace("POST_PATH_INIT thread=MAIN");
+    // ...and so are the per-iteration plan and tail files this run is about to
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_path_init_end_old}" _autobot_path_init_end_pos)
+if(_autobot_path_init_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver path-init end anchor not found")
+endif()
+string(REPLACE "${_autobot_path_init_end_old}" "${_autobot_path_init_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_dir_cleanup_old [=[
+    {
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(DATA_DIR, ec)) {
+            const std::string n = e.path().filename().string();
+            if (n.rfind("dp_died_it", 0) == 0 || n.rfind("dp_tail_it", 0) == 0)
+                std::filesystem::remove(e.path(), ec);
+        }
+    }
+]=])
+set(_autobot_dir_cleanup_new [=[
+    crashTrace("PRE_DIRECTORY_CLEANUP thread=MAIN");
+    {
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(DATA_DIR, ec)) {
+            const std::string n = e.path().filename().string();
+            if (n.rfind("dp_died_it", 0) == 0 || n.rfind("dp_tail_it", 0) == 0)
+                std::filesystem::remove(e.path(), ec);
+        }
+    }
+    crashTrace("POST_DIRECTORY_CLEANUP thread=MAIN");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_dir_cleanup_old}" _autobot_dir_cleanup_pos)
+if(_autobot_dir_cleanup_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver directory-cleanup anchor not found")
+endif()
+string(REPLACE "${_autobot_dir_cleanup_old}" "${_autobot_dir_cleanup_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_stale_cleanup_begin_old [=[
+    {
+        std::error_code ec;
+        std::filesystem::remove(g_fixupPath, ec);
+]=])
+set(_autobot_stale_cleanup_begin_new [=[
+    crashTrace("PRE_STALE_FILE_CLEANUP thread=MAIN");
+    {
+        std::error_code ec;
+        std::filesystem::remove(g_fixupPath, ec);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_stale_cleanup_begin_old}" _autobot_stale_cleanup_begin_pos)
+if(_autobot_stale_cleanup_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver stale-cleanup begin anchor not found")
+endif()
+string(REPLACE "${_autobot_stale_cleanup_begin_old}" "${_autobot_stale_cleanup_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_stale_cleanup_end_old [=[
+        std::filesystem::remove(std::string(DATA_DIR) + "/grouptrace_last.txt", ec);
+    }
+    g_fixupCount = 0;
+]=])
+set(_autobot_stale_cleanup_end_new [=[
+        std::filesystem::remove(std::string(DATA_DIR) + "/grouptrace_last.txt", ec);
+    }
+    crashTrace("POST_STALE_FILE_CLEANUP thread=MAIN");
+    crashTrace("PRE_RUN_STATE_RESET thread=MAIN");
+    g_fixupCount = 0;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_stale_cleanup_end_old}" _autobot_stale_cleanup_end_pos)
+if(_autobot_stale_cleanup_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver stale-cleanup end anchor not found")
+endif()
+string(REPLACE "${_autobot_stale_cleanup_end_old}" "${_autobot_stale_cleanup_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_horizon_begin_old [=[
+    g_horizonFull = g_cfg.dpHorizon;
+]=])
+set(_autobot_horizon_begin_new [=[
+    crashTrace("PRE_HORIZON_INIT thread=MAIN");
+    g_horizonFull = g_cfg.dpHorizon;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_horizon_begin_old}" _autobot_horizon_begin_pos)
+if(_autobot_horizon_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver horizon begin anchor not found")
+endif()
+string(REPLACE "${_autobot_horizon_begin_old}" "${_autobot_horizon_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_horizon_end_old [=[
+    g_horizonNow = g_cfg.dpAdaptiveHorizon ? g_horizonFull : horizonDefault();
+    g_wallRepeats = 0;
+]=])
+set(_autobot_horizon_end_new [=[
+    g_horizonNow = g_cfg.dpAdaptiveHorizon ? g_horizonFull : horizonDefault();
+    crashTrace(fmt::format(
+        "POST_HORIZON_INIT horizonFull={} horizonNow={} thread=MAIN",
+        g_horizonFull, g_horizonNow));
+    g_wallRepeats = 0;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_horizon_end_old}" _autobot_horizon_end_pos)
+if(_autobot_horizon_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver horizon end anchor not found")
+endif()
+string(REPLACE "${_autobot_horizon_end_old}" "${_autobot_horizon_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_state_reset_end_old [=[
+    g_argsLogged = false;
+    g_argsLast.clear();   // ...or level N+1's first solve compares against level N's
+    anchors::reset();
+]=])
+set(_autobot_state_reset_end_new [=[
+    g_argsLogged = false;
+    g_argsLast.clear();   // ...or level N+1's first solve compares against level N's
+    crashTrace("POST_RUN_STATE_RESET thread=MAIN");
+    crashTrace("PRE_ANCHORS_RESET thread=MAIN");
+    anchors::reset();
+    crashTrace("POST_ANCHORS_RESET thread=MAIN");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_state_reset_end_old}" _autobot_state_reset_end_pos)
+if(_autobot_state_reset_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver run-state/anchors anchor not found")
+endif()
+string(REPLACE "${_autobot_state_reset_end_old}" "${_autobot_state_reset_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_start_result_old [=[
+    writeResult("dpsolve: start level=" + std::to_string(g_cfg.levelId)
+                + " csv=" + std::to_string(g_csv.size()) + " bytes horizon="
+                + std::to_string(g_horizon));
+]=])
+set(_autobot_start_result_new [=[
+    crashTrace("PRE_START_RESULT_WRITE thread=MAIN");
+    writeResult("dpsolve: start level=" + std::to_string(g_cfg.levelId)
+                + " csv=" + std::to_string(g_csv.size()) + " bytes horizon="
+                + std::to_string(g_horizon));
+    crashTrace("POST_START_RESULT_WRITE thread=MAIN");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_start_result_old}" _autobot_start_result_pos)
+if(_autobot_start_result_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver start-result anchor not found")
+endif()
+string(REPLACE "${_autobot_start_result_old}" "${_autobot_start_result_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_bootstrap_old [=[
+    const bool bootstrapStarted = startBootstrapRecord();
+    if (!bootstrapStarted)
+        beginFirstAttempt();
+    writeResult("SOLVER_START_END csvBytes=" + std::to_string(g_csv.size())
+]=])
+set(_autobot_bootstrap_new [=[
+    crashTrace("PRE_BOOTSTRAP_CHECK thread=MAIN");
+    const bool movingParts = levelHasMovingParts();
+    const bool bootstrapStarted = startBootstrapRecord();
+    crashTrace(fmt::format(
+        "POST_BOOTSTRAP_CHECK movingParts={} bootstrapStarted={} thread=MAIN",
+        movingParts ? 1 : 0, bootstrapStarted ? 1 : 0));
+    if (!bootstrapStarted) {
+        crashTrace("PRE_BEGIN_FIRST_ATTEMPT thread=MAIN");
+        beginFirstAttempt();
+        crashTrace("POST_BEGIN_FIRST_ATTEMPT thread=MAIN");
+    }
+    writeResult("SOLVER_START_END csvBytes=" + std::to_string(g_csv.size())
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_bootstrap_old}" _autobot_bootstrap_pos)
+if(_autobot_bootstrap_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver bootstrap/start-attempt anchor not found")
+endif()
+string(REPLACE "${_autobot_bootstrap_old}" "${_autobot_bootstrap_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_spawn_begin_old [=[
+inline void spawn(int kind, long long arg, const char* phase) {
+    g_running = true;
+    g_finished = false;
+]=])
+set(_autobot_spawn_begin_new [=[
+inline void spawn(int kind, long long arg, const char* phase) {
+    crashTrace(fmt::format("SPAWN_ENTER kind={} thread=MAIN", kind));
+    crashTrace("PRE_SPAWN_STATE_RESET thread=MAIN");
+    g_running = true;
+    g_finished = false;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_spawn_begin_old}" _autobot_spawn_begin_pos)
+if(_autobot_spawn_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver spawn begin anchor not found")
+endif()
+string(REPLACE "${_autobot_spawn_begin_old}" "${_autobot_spawn_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_spawn_state_end_old [=[
+    g_ckBase = g_plan;
+    g_ckFlights = g_ckPassed = g_ckDeaths = 0;
+    {
+        std::lock_guard<std::mutex> g(g_ckMx);
+]=])
+set(_autobot_spawn_state_end_new [=[
+    g_ckBase = g_plan;
+    g_ckFlights = g_ckPassed = g_ckDeaths = 0;
+    crashTrace("POST_SPAWN_STATE_RESET thread=MAIN");
+    crashTrace("PRE_CK_MUTEX_RESET thread=MAIN");
+    {
+        std::lock_guard<std::mutex> g(g_ckMx);
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_spawn_state_end_old}" _autobot_spawn_state_end_pos)
+if(_autobot_spawn_state_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver spawn-state/mutex anchor not found")
+endif()
+string(REPLACE "${_autobot_spawn_state_end_old}" "${_autobot_spawn_state_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_spawn_mutex_end_old [=[
+        g_ckDeath = CkDeath{};
+        g_ckDeaf.clear();
+    }
+    dpbridge::cancelSearch(false);    g_t0 = std::chrono::steady_clock::now();
+]=])
+set(_autobot_spawn_mutex_end_new [=[
+        g_ckDeath = CkDeath{};
+        g_ckDeaf.clear();
+    }
+    crashTrace("POST_CK_MUTEX_RESET thread=MAIN");
+    crashTrace("PRE_SPAWN_CANCEL_SEARCH thread=MAIN");
+    dpbridge::cancelSearch(false);
+    crashTrace("POST_SPAWN_CANCEL_SEARCH thread=MAIN");
+    g_t0 = std::chrono::steady_clock::now();
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_spawn_mutex_end_old}" _autobot_spawn_mutex_end_pos)
+if(_autobot_spawn_mutex_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver spawn mutex/cancel anchor not found")
+endif()
+string(REPLACE "${_autobot_spawn_mutex_end_old}" "${_autobot_spawn_mutex_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_thread_begin_old [=[
+    const int gen = g_generation.load();   // this session's generation, read on the main thread
+    std::thread([kind, arg, gen]() {
+        bool ok = false;
+]=])
+set(_autobot_thread_begin_new [=[
+    const int gen = g_generation.load();   // this session's generation, read on the main thread
+    crashTrace(fmt::format("PRE_THREAD_CREATE kind={} generation={} thread=MAIN", kind, gen));
+    std::thread([kind, arg, gen]() {
+        crashTrace(fmt::format(
+            "WORKER_ENTER kind={} generation={} thread=WORKER", kind, gen));
+        bool ok = false;
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_thread_begin_old}" _autobot_thread_begin_pos)
+if(_autobot_thread_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver worker-enter/thread-create anchor not found")
+endif()
+string(REPLACE "${_autobot_thread_begin_old}" "${_autobot_thread_begin_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_worker_prep_old [=[
+                    std::error_code ec;
+                    std::filesystem::remove(g_planPath, ec);
+                    const std::vector<std::string> a0 = baseArgs(g_planPath);
+                    logSolverArgs(a0);
+]=])
+set(_autobot_worker_prep_new [=[
+                    std::error_code ec;
+                    crashTrace("PRE_PLAN_REMOVE thread=WORKER");
+                    std::filesystem::remove(g_planPath, ec);
+                    crashTrace(fmt::format(
+                        "POST_PLAN_REMOVE ec={} thread=WORKER", ec.value()));
+                    crashTrace("PRE_BASE_ARGS thread=WORKER");
+                    const std::vector<std::string> a0 = baseArgs(g_planPath);
+                    crashTrace(fmt::format(
+                        "POST_BASE_ARGS argc={} thread=WORKER", a0.size()));
+                    crashTrace("PRE_LOG_SOLVER_ARGS thread=WORKER");
+                    logSolverArgs(a0);
+                    crashTrace("POST_LOG_SOLVER_ARGS thread=WORKER");
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_worker_prep_old}" _autobot_worker_prep_pos)
+if(_autobot_worker_prep_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver worker-prep anchor not found")
+endif()
+string(REPLACE "${_autobot_worker_prep_old}" "${_autobot_worker_prep_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_thread_end_old [=[
+        g_finished = true;
+    }).detach();
+}
+]=])
+set(_autobot_thread_end_new [=[
+        g_finished = true;
+    }).detach();
+    crashTrace(fmt::format(
+        "POST_THREAD_CREATE kind={} generation={} thread=MAIN", kind, gen));
+}
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_thread_end_old}" _autobot_thread_end_pos)
+if(_autobot_thread_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver thread-create end anchor not found")
+endif()
+string(REPLACE "${_autobot_thread_end_old}" "${_autobot_thread_end_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
 
 set(_autobot_candidate_verify_old [=[
     g_hudAnchorT = g_anchorT;
