@@ -806,6 +806,10 @@ string(REPLACE "${_autobot_maxattempt_profile_old}" "${_autobot_maxattempt_profi
 # actual m_level object.
 set(_autobot_config "${AUTOBOT_GDSOLVER_ROOT}/src/mod/config.hpp")
 file(READ "${_autobot_config}" _autobot_config_text)
+string(REPLACE
+    "#include \"mod/prelude.hpp\""
+    "#include \"mod/prelude.hpp\"\n#include \"diagnostics/flight_recorder_core.hpp\""
+    _autobot_config_text "${_autobot_config_text}")
 set(_autobot_progress_owner_old [=[
 inline LevelProgress g_progressAtStart;
 inline GJGameLevel* g_progressLevel = nullptr;
@@ -813,6 +817,35 @@ inline GJGameLevel* g_progressLevel = nullptr;
 set(_autobot_progress_owner_new [=[
 inline LevelProgress g_progressAtStart;
 inline GJGameLevel* g_progressLevel = nullptr;
+
+inline std::atomic<unsigned long long> g_sessionConfigGeneration{0};
+inline std::atomic<unsigned long long> g_publicLaunchGeneration{0};
+inline std::atomic<unsigned long long> g_customSessionConfigCount{0};
+inline bool g_customConfigureAuditActive = false;
+inline std::atomic<bool> g_firstRealGJUpdateTrace{false};
+inline std::atomic<bool> g_firstRenderAfterInitTrace{false};
+inline std::atomic<bool> g_firstVisibilityUpdateTrace{false};
+
+inline void crashTrace(const std::string& checkpoint) {
+    resolveDataDir();
+    const auto path = std::filesystem::path(DATA_DIR) / "autobot-crash-trace.txt";
+    const bool durable = autobot::diag::appendCrashSafeLine(path, checkpoint);
+    log::info("AUTOBOT_CRASH_TRACE {}", checkpoint);
+    if (!durable)
+        log::warn("AUTOBOT_CRASH_TRACE durable flush failed for {}", path.string());
+}
+
+inline void crashTraceOnce(std::atomic<bool>& flag, const std::string& checkpoint) {
+    bool expected = false;
+    if (flag.compare_exchange_strong(expected, true))
+        crashTrace(checkpoint);
+}
+
+inline void resetCustomFlightOnceFlags() {
+    g_firstRealGJUpdateTrace.store(false);
+    g_firstRenderAfterInitTrace.store(false);
+    g_firstVisibilityUpdateTrace.store(false);
+}
 
 // g_progressLevel is dereferenced after resets and at session teardown. Own one
 // explicit retain while it is published so saved/online/editor level lifetime
@@ -879,6 +912,15 @@ inline bool uiConfigureSession(int levelId) {
 ]=])
 set(_autobot_session_config_begin_new [=[
 inline bool uiConfigureSession(int levelId) {
+    const auto configGeneration = ++g_sessionConfigGeneration;
+    const auto customCount = g_customConfigureAuditActive
+        ? ++g_customSessionConfigCount : 0ULL;
+    crashTrace(fmt::format(
+        "SESSION_CONFIG_GENERATION={} SESSION_CONFIG_COUNT={} levelID={} uiMode={}",
+        configGeneration, customCount, levelId, g_uiMode));
+    if (g_customConfigureAuditActive && customCount > 1)
+        crashTrace(fmt::format("SESSION_CONFIG_COUNT_BUG count={} levelID={}",
+                               customCount, levelId));
     log::info("SESSION_CONFIG_BEGIN levelID={} uiMode={}", levelId, g_uiMode);
     if (g_uiMode == UI_MODE_SOLVE) {
 ]=])
@@ -926,6 +968,63 @@ if(_autobot_session_end_pos EQUAL -1)
 endif()
 string(REPLACE "${_autobot_session_end_old}" "${_autobot_session_end_new}"
     _autobot_session_text "${_autobot_session_text}")
+
+set(_autobot_fastdt_old "        g_cfg.fastdt = 1.f / 60.f;   // 4 physics ticks per call")
+set(_autobot_fastdt_new [=[
+        crashTrace("PRE_FAST_MODE_ENABLE");
+        g_cfg.fastdt = 1.f / 60.f;   // 4 physics ticks per call
+]=])
+string(FIND "${_autobot_session_text}" "${_autobot_fastdt_old}" _autobot_fastdt_pos)
+if(_autobot_fastdt_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver fast-mode begin anchor not found")
+endif()
+string(REPLACE "${_autobot_fastdt_old}" "${_autobot_fastdt_new}"
+    _autobot_session_text "${_autobot_session_text}")
+
+set(_autobot_fastmode_end_old "        g_realtimeOverride = false;")
+set(_autobot_fastmode_end_new [=[
+        g_realtimeOverride = false;
+        crashTrace("POST_FAST_MODE_ENABLE");
+]=])
+string(FIND "${_autobot_session_text}" "${_autobot_fastmode_end_old}" _autobot_fastmode_end_pos)
+if(_autobot_fastmode_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver fast-mode end anchor not found")
+endif()
+string(REPLACE "${_autobot_fastmode_end_old}" "${_autobot_fastmode_end_new}"
+    _autobot_session_text "${_autobot_session_text}")
+
+set(_autobot_open_files_old "    openFiles();")
+set(_autobot_open_files_new [=[
+    crashTrace("PRE_OPEN_FILES");
+    openFiles();
+    crashTrace("POST_OPEN_FILES");
+]=])
+string(FIND "${_autobot_session_text}" "${_autobot_open_files_old}" _autobot_open_files_pos)
+if(_autobot_open_files_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver openFiles anchor not found")
+endif()
+string(REPLACE "${_autobot_open_files_old}" "${_autobot_open_files_new}"
+    _autobot_session_text "${_autobot_session_text}")
+
+set(_autobot_session_flags_old [=[
+    g_started = true;
+    g_uiSession = true;
+    g_forceCleanStart = true;
+]=])
+set(_autobot_session_flags_new [=[
+    crashTrace("PRE_SESSION_FLAGS");
+    g_started = true;
+    g_uiSession = true;
+    g_forceCleanStart = true;
+    crashTrace("POST_SESSION_FLAGS");
+]=])
+string(FIND "${_autobot_session_text}" "${_autobot_session_flags_old}" _autobot_session_flags_pos)
+if(_autobot_session_flags_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver session-flags anchor not found")
+endif()
+string(REPLACE "${_autobot_session_flags_old}" "${_autobot_session_flags_new}"
+    _autobot_session_text "${_autobot_session_text}")
+
 file(WRITE "${_autobot_session}" "${_autobot_session_text}")
 
 set(_autobot_play_init_old [=[
@@ -947,56 +1046,94 @@ set(_autobot_play_init_old [=[
 set(_autobot_play_init_new [=[
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         const bool custom = isPublicCustomLevel(level);
-        if (custom && level) {
-            log::info(
-                "CUSTOM_LEVEL_INIT_ENTER ptr={} levelID={} levelType={} "
+
+        auto configureSession = [&](bool customAudit) {
+            const bool want = (!g_started || g_sessionOver) && g_uiMode > 0 && level;
+            if (customAudit) {
+                crashTrace(fmt::format("PRE_UI_CONFIGURE want={} generation={}",
+                                       want ? 1 : 0, g_sessionConfigGeneration.load()));
+            }
+            bool configured = false;
+            if (want) {
+                if (customAudit) {
+                    g_customSessionConfigCount.store(0);
+                    g_customConfigureAuditActive = true;
+                }
+                configured = uiConfigureSession(level->m_levelID.value());
+                if (customAudit)
+                    g_customConfigureAuditActive = false;
+            }
+            if (customAudit) {
+                crashTrace(fmt::format(
+                    "POST_UI_CONFIGURE result={} SESSION_CONFIG_COUNT={} generation={}",
+                    configured ? 1 : 0, g_customSessionConfigCount.load(),
+                    g_sessionConfigGeneration.load()));
+            }
+            return configured;
+        };
+
+        if (custom) {
+            const auto launchGeneration = ++g_publicLaunchGeneration;
+            resetCustomFlightOnceFlags();
+            crashTrace(fmt::format(
+                "PUBLIC_PLAY_ENTER launch={} INPUT_LEVEL_PTR={} levelID={} levelType={} "
                 "levelVersion={} gameVersion={} objectCount={} levelStringSize={}",
-                static_cast<void*>(level), level->m_levelID.value(),
-                static_cast<int>(level->m_levelType), level->m_levelVersion,
-                level->m_gameVersion, level->m_objectCount,
-                level->m_levelString.size());
+                launchGeneration, static_cast<void*>(level),
+                level ? level->m_levelID.value() : -1,
+                level ? static_cast<int>(level->m_levelType) : -1,
+                level ? level->m_levelVersion : -1,
+                level ? level->m_gameVersion : -1,
+                level ? level->m_objectCount : -1,
+                level ? level->m_levelString.size() : 0));
+            crashTrace("PLAYLAYER_INIT_HOOK_ENTER");
+            crashTrace("PRE_ORIGINAL_PLAYLAYER_INIT");
+
+            const bool ok = PlayLayer::init(level, useReplay, dontCreateObjects);
+            crashTrace(fmt::format(
+                "POST_ORIGINAL_PLAYLAYER_INIT original_result={} INPUT_LEVEL_PTR={} "
+                "PLAYLAYER_M_LEVEL_PTR={}",
+                ok ? 1 : 0, static_cast<void*>(level),
+                static_cast<void*>(this->m_level)));
+            if (!ok) return false;
+
+            GJGameLevel* liveLevel = this->m_level ? this->m_level : level;
+            auto* glm = GameLevelManager::sharedState();
+            auto* savedLevel = (glm && level)
+                ? glm->getSavedLevel(level->m_levelID.value()) : nullptr;
+            auto* onlineObject = (glm && glm->m_onlineLevels && level)
+                ? glm->m_onlineLevels->objectForKey(level->m_levelID.value()) : nullptr;
+            crashTrace(fmt::format(
+                "CUSTOM_LEVEL_POINTERS INPUT_LEVEL_PTR={} PLAYLAYER_M_LEVEL_PTR={} "
+                "SAVED_LEVEL_PTR={} ONLINE_CACHE_PTR={}",
+                static_cast<void*>(level), static_cast<void*>(this->m_level),
+                static_cast<void*>(savedLevel), static_cast<void*>(onlineObject)));
+
+            // Isolation experiment: no AutoBot session/solver mutation happened before
+            // the original custom PlayLayer init. Configure only after GD owns a valid layer.
+            configureSession(true);
+
+            bindProgressLevel(liveLevel);
+            g_progressAtStart = sampleProgress(liveLevel);
+            crashTrace(fmt::format("POST_LEVEL_REBIND progressLevel={} live={}",
+                                   static_cast<void*>(g_progressLevel),
+                                   static_cast<void*>(liveLevel)));
+            return true;
         }
-        log::info("PLAYLAYER_INIT_BEFORE_ORIGINAL level={} custom={}",
-                  static_cast<void*>(level), custom ? 1 : 0);
 
-        // Depending on the panel mode, auto-configure a session whichever level is entered.
-        // uiConfigureSession resets old session state, including the previous retained level,
-        // so ownership of this level is established only after that reset.
-        bool want = (!g_started || g_sessionOver) && g_uiMode > 0 && level;
-        if (want) uiConfigureSession(level->m_levelID.value());
-
+        // Official/main-level behavior is intentionally preserved.
+        configureSession(false);
         bindProgressLevel(level);
         g_progressAtStart = sampleProgress(level);
-        if (custom && level && g_started) {
-            writeResult(fmt::format(
-                "CUSTOM_LEVEL_INIT_ENTER ptr={} levelID={} levelType={} "
-                "levelVersion={} gameVersion={} objectCount={} levelStringSize={}",
-                static_cast<void*>(level), level->m_levelID.value(),
-                static_cast<int>(level->m_levelType), level->m_levelVersion,
-                level->m_gameVersion, level->m_objectCount,
-                level->m_levelString.size()));
-        }
-        if (g_started) writeResult("PLAYLAYER_INIT_BEFORE_ORIGINAL");
-
         const bool ok = PlayLayer::init(level, useReplay, dontCreateObjects);
         log::info("PLAYLAYER_INIT_AFTER_ORIGINAL ok={} inputLevel={} layerLevel={}",
                   ok ? 1 : 0, static_cast<void*>(level),
                   static_cast<void*>(this->m_level));
-        if (g_started) writeResult(std::string("PLAYLAYER_INIT_AFTER_ORIGINAL ok=")
-                                   + (ok ? "1" : "0"));
-
         if (!ok) {
             clearProgressLevel();
             return false;
         }
-
-        // Bind to the actual level retained/used by PlayLayer after GD has finished init.
-        // Some custom launch flows do not have the same ownership as getMainLevel().
         GJGameLevel* liveLevel = this->m_level ? this->m_level : level;
         bindProgressLevel(liveLevel);
-        if (custom)
-            log::info("CUSTOM_LEVEL_INIT_BOUND input={} live={}",
-                      static_cast<void*>(level), static_cast<void*>(liveLevel));
         return true;
     }
 ]=])
@@ -1045,6 +1182,48 @@ endif()
 string(REPLACE "${_autobot_reset_checkpoint_old}" "${_autobot_reset_checkpoint_new}"
     _autobot_play_hooks_text "${_autobot_play_hooks_text}")
 
+
+set(_autobot_visibility_first_old "    void updateVisibility(float dt) {")
+set(_autobot_visibility_first_new [=[
+    void updateVisibility(float dt) {
+        if (g_started && !g_sessionOver)
+            crashTraceOnce(g_firstVisibilityUpdateTrace, "FIRST_VISIBILITY_UPDATE");
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_visibility_first_old}" _autobot_visibility_first_pos)
+if(_autobot_visibility_first_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver visibility hook anchor not found")
+endif()
+string(REPLACE "${_autobot_visibility_first_old}" "${_autobot_visibility_first_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
+set(_autobot_model_build_old "                solver::buildPois(this);")
+set(_autobot_model_build_new [=[
+                crashTrace("PRE_LEVEL_MODEL_BUILD");
+                solver::buildPois(this);
+                crashTrace("POST_LEVEL_MODEL_BUILD");
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_model_build_old}" _autobot_model_build_pos)
+if(_autobot_model_build_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver buildPois anchor not found")
+endif()
+string(REPLACE "${_autobot_model_build_old}" "${_autobot_model_build_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
+set(_autobot_solver_call_old "                if (g_cfg.dpSolve) dpsolve::start(this);")
+set(_autobot_solver_call_new [=[
+                if (g_cfg.dpSolve) {
+                    crashTrace("PRE_SOLVER_START");
+                    dpsolve::start(this);
+                    crashTrace("POST_SOLVER_START");
+                }
+]=])
+string(FIND "${_autobot_play_hooks_text}" "${_autobot_solver_call_old}" _autobot_solver_call_pos)
+if(_autobot_solver_call_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver solver-call anchor not found")
+endif()
+string(REPLACE "${_autobot_solver_call_old}" "${_autobot_solver_call_new}"
+    _autobot_play_hooks_text "${_autobot_play_hooks_text}")
+
 file(WRITE "${_autobot_play_hooks}" "${_autobot_play_hooks_text}")
 
 # Solver-start checkpoints. No search behavior changes.
@@ -1091,7 +1270,92 @@ if(_autobot_solver_start_end_pos EQUAL -1)
 endif()
 string(REPLACE "${_autobot_solver_start_end_old}" "${_autobot_solver_start_end_new}"
     _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_object_extract_old [=[
+    std::ostringstream oss;
+    solver::writeObjRects(oss, l);
+    g_csv = oss.str();
+]=])
+set(_autobot_object_extract_new [=[
+    crashTrace("PRE_OBJECT_EXTRACTION");
+    std::ostringstream oss;
+    solver::writeObjRects(oss, l);
+    g_csv = oss.str();
+    crashTrace(fmt::format("POST_OBJECT_EXTRACTION csvBytes={}", g_csv.size()));
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_object_extract_old}" _autobot_object_extract_pos)
+if(_autobot_object_extract_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver object-extraction anchor not found")
+endif()
+string(REPLACE "${_autobot_object_extract_old}" "${_autobot_object_extract_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_initial_search_old "                    g_rc = dpbridge::solveInProcess(g_csv, a0);")
+set(_autobot_initial_search_new [=[
+                    crashTrace("PRE_INITIAL_SEARCH");
+                    g_rc = dpbridge::solveInProcess(g_csv, a0);
+                    crashTrace(fmt::format("POST_INITIAL_SEARCH rc={}", g_rc));
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_initial_search_old}" _autobot_initial_search_pos)
+if(_autobot_initial_search_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver initial-search anchor not found")
+endif()
+string(REPLACE "${_autobot_initial_search_old}" "${_autobot_initial_search_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
+set(_autobot_candidate_verify_old [=[
+    g_hudAnchorT = g_anchorT;
+    g_hudAnchorX = g_anchorX;
+    if (auto* pl = PlayLayer::get()) pl->resetLevel();
+    if (g_iter == 0) {
+]=])
+set(_autobot_candidate_verify_new [=[
+    g_hudAnchorT = g_anchorT;
+    g_hudAnchorX = g_anchorX;
+    crashTrace(fmt::format("PRE_CANDIDATE_VERIFY inputs={} iter={}", g_plan.size(), g_iter));
+    if (auto* pl = PlayLayer::get()) pl->resetLevel();
+    crashTrace(fmt::format("POST_CANDIDATE_VERIFY inputs={} iter={}", g_plan.size(), g_iter));
+    if (g_iter == 0) {
+]=])
+string(FIND "${_autobot_repair_text}" "${_autobot_candidate_verify_old}" _autobot_candidate_verify_pos)
+if(_autobot_candidate_verify_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver candidate-verify anchor not found")
+endif()
+string(REPLACE "${_autobot_candidate_verify_old}" "${_autobot_candidate_verify_new}"
+    _autobot_repair_text "${_autobot_repair_text}")
+
 file(WRITE "${_autobot_repair}" "${_autobot_repair_text}")
+
+# Hard-crash flight recorder hooks at the first update/render boundary reached after init.
+set(_autobot_gamelayer "${AUTOBOT_GDSOLVER_ROOT}/src/mod/hooks_gamelayer.cpp")
+file(READ "${_autobot_gamelayer}" _autobot_gamelayer_text)
+set(_autobot_first_update_old "    void update(float dt) {")
+set(_autobot_first_update_new [=[
+    void update(float dt) {
+        if (g_started && !g_sessionOver)
+            crashTraceOnce(g_firstRealGJUpdateTrace,
+                           fmt::format("FIRST_REAL_GJ_UPDATE dt={:.6f}", dt));
+]=])
+string(FIND "${_autobot_gamelayer_text}" "${_autobot_first_update_old}" _autobot_first_update_pos)
+if(_autobot_first_update_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver first-update anchor not found")
+endif()
+string(REPLACE "${_autobot_first_update_old}" "${_autobot_first_update_new}"
+    _autobot_gamelayer_text "${_autobot_gamelayer_text}")
+
+set(_autobot_first_render_old "    void visit() {")
+set(_autobot_first_render_new [=[
+    void visit() {
+        if (g_started && !g_sessionOver)
+            crashTraceOnce(g_firstRenderAfterInitTrace, "FIRST_RENDER_AFTER_INIT");
+]=])
+string(FIND "${_autobot_gamelayer_text}" "${_autobot_first_render_old}" _autobot_first_render_pos)
+if(_autobot_first_render_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver first-render anchor not found")
+endif()
+string(REPLACE "${_autobot_first_render_old}" "${_autobot_first_render_new}"
+    _autobot_gamelayer_text "${_autobot_gamelayer_text}")
+file(WRITE "${_autobot_gamelayer}" "${_autobot_gamelayer_text}")
 
 # AutoBot is hands-off by default: entering a level begins a cold Solve session.
 # The upstream panel still lets the user switch back to Normal/Replay manually.
@@ -1141,6 +1405,7 @@ endif()
 add_library(${PROJECT_NAME} SHARED ${AUTOBOT_SOLVER_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${AUTOBOT_GDSOLVER_ROOT}/src"
     "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
 )
@@ -1182,17 +1447,25 @@ if(AUTOBOT_BUILD_SOLVER_TESTS)
     add_executable(autobot-solve-perf-profile
         tests/perf/SolvePerfProfile.cpp
     )
+    add_executable(autobot-flight-recorder-test
+        tests/diagnostics/FlightRecorderFlushTest.cpp
+    )
     target_include_directories(autobot-build4-functional-tests PRIVATE
         "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
     )
     target_include_directories(autobot-solve-perf-profile PRIVATE
         "${AUTOBOT_GDSOLVER_ROOT}/dp/src"
     )
+    target_include_directories(autobot-flight-recorder-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
     if(MSVC)
         target_compile_options(autobot-build4-functional-tests PRIVATE /W4)
         target_compile_options(autobot-solve-perf-profile PRIVATE /O2 /W4)
+        target_compile_options(autobot-flight-recorder-test PRIVATE /W4)
     else()
         target_compile_options(autobot-build4-functional-tests PRIVATE -Wall -Wextra)
         target_compile_options(autobot-solve-perf-profile PRIVATE -O3 -Wall -Wextra)
+        target_compile_options(autobot-flight-recorder-test PRIVATE -Wall -Wextra)
     endif()
 endif()

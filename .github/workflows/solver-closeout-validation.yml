@@ -81,6 +81,14 @@ jobs:
           & "./build/autobot-build4-functional-tests.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Flight recorder flush gate
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target autobot-flight-recorder-test --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "./build/autobot-flight-recorder-test.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Baseline solve performance profile
         shell: pwsh
         run: |
@@ -185,15 +193,61 @@ jobs:
           init_pos = hooks.index("bool init(GJGameLevel* level")
           init_end = hooks.index("void onQuit()", init_pos)
           init_body = hooks[init_pos:init_end]
-          order = [
-              init_body.index("uiConfigureSession("),
-              init_body.index("bindProgressLevel(level)"),
-              init_body.index("PlayLayer::init(level"),
-              init_body.index("this->m_level ? this->m_level : level"),
-          ]
-          if order != sorted(order):
-              raise SystemExit("CUSTOM LEVEL INIT LIFECYCLE ORDER IS WRONG")
+          custom_pos = init_body.index("if (custom)")
+          original_pos = init_body.index("const bool ok = PlayLayer::init", custom_pos)
+          custom_config_pos = init_body.index("configureSession(true)", original_pos)
+          rebind_pos = init_body.index("bindProgressLevel(liveLevel)", custom_config_pos)
+          if not (custom_pos < original_pos < custom_config_pos < rebind_pos):
+              raise SystemExit("CUSTOM LEVEL POST-INIT LIFECYCLE ORDER IS WRONG")
+          pre_original = init_body[custom_pos:original_pos]
+          for token in ["configureSession(true)", "bindProgressLevel(", "sampleProgress("]:
+              if token in pre_original:
+                  raise SystemExit("CUSTOM PRE-INIT AUTOBOT SIDE EFFECT FOUND: " + token)
+          print("CUSTOM_LEVEL_PREINIT_SIDE_EFFECT_TEST=PASS")
+
+          all_src = ""
+          for path in (upstream / "src").rglob("*"):
+              if path.is_file():
+                  try:
+                      all_src += path.read_text(encoding="utf-8", errors="ignore")
+                  except OSError:
+                      pass
+          if all_src.count("uiConfigureSession(") != 2:
+              raise SystemExit("EXPECTED EXACTLY ONE uiConfigureSession CALL SITE PLUS DEFINITION")
+          if init_body.count("configureSession(true)") != 1:
+              raise SystemExit("CUSTOM LEVEL CONFIGURE CALL COUNT IS NOT ONE")
+          print("CUSTOM_LEVEL_SINGLE_SESSION_CONFIG_TEST=PASS")
+
+          if "this->m_level ? this->m_level : level" not in init_body[original_pos:]:
+              raise SystemExit("CUSTOM POST-INIT LIVE LEVEL REBIND MISSING")
+          if "CUSTOM_LEVEL_POINTERS" not in init_body[original_pos:]:
+              raise SystemExit("CUSTOM POINTER AUDIT MISSING")
+          print("CUSTOM_LEVEL_POSTINIT_BIND_TEST=PASS")
           print("CUSTOM_LEVEL_SESSION_LIFECYCLE_TEST=PASS")
+
+          checkpoints = [
+              "PUBLIC_PLAY_ENTER", "PRE_UI_CONFIGURE", "POST_UI_CONFIGURE",
+              "PRE_OPEN_FILES", "POST_OPEN_FILES", "PRE_SESSION_FLAGS",
+              "POST_SESSION_FLAGS", "PLAYLAYER_INIT_HOOK_ENTER",
+              "PRE_ORIGINAL_PLAYLAYER_INIT", "POST_ORIGINAL_PLAYLAYER_INIT",
+              "POST_LEVEL_REBIND", "PRE_SOLVER_START", "POST_SOLVER_START",
+              "PRE_LEVEL_MODEL_BUILD", "POST_LEVEL_MODEL_BUILD",
+              "PRE_OBJECT_EXTRACTION", "POST_OBJECT_EXTRACTION",
+              "PRE_INITIAL_SEARCH", "POST_INITIAL_SEARCH",
+              "PRE_CANDIDATE_VERIFY", "POST_CANDIDATE_VERIFY",
+              "PRE_FAST_MODE_ENABLE", "POST_FAST_MODE_ENABLE",
+              "FIRST_REAL_GJ_UPDATE", "FIRST_RENDER_AFTER_INIT",
+              "FIRST_VISIBILITY_UPDATE",
+          ]
+          generated = config + "\n" + session + "\n" + hooks + "\n" + repair
+          gamelayer = (upstream / "src/mod/hooks_gamelayer.cpp").read_text(encoding="utf-8")
+          generated += "\n" + gamelayer
+          missing_checkpoints = [x for x in checkpoints if x not in generated]
+          if missing_checkpoints:
+              raise SystemExit("FLIGHT RECORDER CHECKPOINTS MISSING: " + ", ".join(missing_checkpoints))
+          if "autobot-crash-trace.txt" not in config or "AUTOBOT_CRASH_TRACE" not in config:
+              raise SystemExit("FLIGHT RECORDER FILE/LOG DUPLICATION MISSING")
+          print("FLIGHT_RECORDER_CHECKPOINT_SET_TEST=PASS")
 
           hud = (upstream / "src/mod/hud.hpp").read_text(encoding="utf-8")
           panel = (upstream / "src/mod/ui_panel.hpp").read_text(encoding="utf-8")
@@ -232,11 +286,11 @@ jobs:
           test -n "$GEODE_SOURCE"
 
           mkdir -p runtime-candidate
-          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability.geode
-          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability.geode | awk '{print $1}')"
+          cp "$GEODE_SOURCE" runtime-candidate/AutoBot-T7-public-level-stability-v2.geode
+          SHA256="$(sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v2.geode | awk '{print $1}')"
 
           cat > runtime-candidate/RUNTIME-CANDIDATE-REPORT.txt <<EOF
-          AUTOBOT T7 — PUBLIC LEVEL STABILITY CANDIDATE
+          AUTOBOT T7 — PUBLIC LEVEL STABILITY V2 CANDIDATE
           FINAL_SOLVER_CLOSEOUT_COMMIT=${GITHUB_SHA}
           RUN_ID=${GITHUB_RUN_ID}
           SOURCE_BRANCH=${GITHUB_REF_NAME}
@@ -268,7 +322,7 @@ jobs:
           EOF
 
           printf '%s\n' "${GITHUB_SHA}" > runtime-candidate/SOURCE-COMMIT.txt
-          sha256sum runtime-candidate/AutoBot-T7-public-level-stability.geode > runtime-candidate/SHA256SUMS.txt
+          sha256sum runtime-candidate/AutoBot-T7-public-level-stability-v2.geode > runtime-candidate/SHA256SUMS.txt
 
           echo "RUNTIME_CANDIDATE_SHA256=$SHA256"
           echo "PUBLIC_LEVEL_STABILITY_CANDIDATE_PREPARED=PASS"
@@ -276,7 +330,7 @@ jobs:
       - name: Upload public-level stability candidate
         uses: actions/upload-artifact@v4
         with:
-          name: AutoBot-T7-public-level-stability
+          name: AutoBot-T7-public-level-stability-v2
           path: runtime-candidate/
           if-no-files-found: error
           retention-days: 14
