@@ -1528,7 +1528,7 @@ set(_autobot_bootstrap_old [=[
 ]=])
 set(_autobot_bootstrap_new [=[
     crashTrace("PRE_BOOTSTRAP_CHECK thread=MAIN");
-    const bool movingParts = levelHasMovingParts();
+    const bool movingParts = g_cfg.dpGroups && grouptrace::g_on && !grouptrace::g_objs.empty();
     const bool bootstrapStarted = startBootstrapRecord();
     crashTrace(fmt::format(
         "POST_BOOTSTRAP_CHECK movingParts={} bootstrapStarted={} thread=MAIN",
