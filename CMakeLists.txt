@@ -1394,6 +1394,520 @@ endif()
 string(REPLACE "\"GDSOLVER\"" "\"AutoBotT7\"" _panel_text "${_panel_text}")
 file(WRITE "${_panel}" "${_panel_text}")
 
+# Public/custom model-build stability diagnostics. This patches only the live
+# model exporter; reachability, repair-bound, physics and route selection stay unchanged.
+set(_autobot_solver_header "${AUTOBOT_GDSOLVER_ROOT}/src/solver/solver.hpp")
+file(READ "${_autobot_solver_header}" _autobot_solver_header_text)
+
+set(_ab_obj_loop_old [=[
+    for (auto* obj : CCArrayExt<GameObject*>(l->m_objects)) {
+        if (!obj) continue;
+        auto r = obj->getObjectRect();
+]=])
+set(_ab_obj_loop_new [=[
+    size_t autobotObjIndex = 0;
+    for (auto* obj : CCArrayExt<GameObject*>(l->m_objects)) {
+        const size_t autobotIndex = autobotObjIndex++;
+        if (!obj) continue;
+        if ((autobotIndex % 128u) == 0u)
+            crashTrace(fmt::format(
+                "OBJRECT_PROGRESS phase=objrects index={} uid={} id={} type={} ptr={}",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+        auto r = obj->getObjectRect();
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_obj_loop_old}" _ab_obj_loop_pos)
+if(_ab_obj_loop_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver objrect loop anchor not found")
+endif()
+string(REPLACE "${_ab_obj_loop_old}" "${_ab_obj_loop_new}"
+    _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_tp_old [=[
+        if ((int)obj->m_objectType == 28) {
+            auto* tp = static_cast<TeleportPortalObject*>(obj);
+            tpy = obj->getRealPosition().y + tp->m_teleportYOffset;
+            tpg = tp->m_gravityMode;
+            tpix = tp->m_ignoreX ? 1 : 0;
+            tpiy = tp->m_ignoreY ? 1 : 0;
+            if (tp->m_orangePortal) {
+                auto ep = tp->m_orangePortal->getRealPosition();
+                tpex = ep.x;
+                tpey = ep.y;
+            } else if (tp->m_targetGroupID > 0) {
+                // 2nd path of teleportPlayer (0x20fe8a): without a partner it
+                // picks one member of the m_targetGroupID group. With several
+                // members it picks RANDOMLY via an LCG, but with one it is
+                // deterministic at index 0 (the cmp eax,1 at 0x20feb6 skips the
+                // RNG). Both 2902s in lv22 were single-member groups (the
+                // decorations uid 6435/6436).
+                auto* grp = l->getGroup(tp->m_targetGroupID);
+                const int n = grp ? (int)grp->count() : 0;
+                if (n >= 1) {
+                    auto* ex = static_cast<GameObject*>(grp->objectAtIndex(0));
+                    auto ep = ex->getRealPosition();
+                    tpex = ep.x;
+                    tpey = ep.y;
+                }
+                if (n != 1)
+                    log::info("solver: teleport uid {} target group {} has {} "
+                              "members (random exit - NOT deterministic)",
+                              obj->m_uniqueID, tp->m_targetGroupID, n);
+            }
+        }
+]=])
+set(_ab_tp_new [=[
+        if ((int)obj->m_objectType == 28) {
+            crashTrace(fmt::format(
+                "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=TeleportPortalCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            if (auto* tp = geode::cast::typeinfo_cast<TeleportPortalObject*>(obj)) {
+                tpy = obj->getRealPosition().y + tp->m_teleportYOffset;
+                tpg = tp->m_gravityMode;
+                tpix = tp->m_ignoreX ? 1 : 0;
+                tpiy = tp->m_ignoreY ? 1 : 0;
+                if (tp->m_orangePortal) {
+                    crashTrace(fmt::format(
+                        "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=OrangePortalDereference",
+                        autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                        static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+                    auto ep = tp->m_orangePortal->getRealPosition();
+                    tpex = ep.x;
+                    tpey = ep.y;
+                } else if (tp->m_targetGroupID > 0) {
+                    crashTrace(fmt::format(
+                        "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=TargetGroupLookup group={}",
+                        autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                        static_cast<int>(obj->m_objectType), static_cast<void*>(obj),
+                        tp->m_targetGroupID));
+                    auto* grp = l->getGroup(tp->m_targetGroupID);
+                    const int n = grp ? (int)grp->count() : 0;
+                    if (n >= 1) {
+                        auto* raw = grp->objectAtIndex(0);
+                        if (auto* ex = geode::cast::typeinfo_cast<GameObject*>(raw)) {
+                            auto ep = ex->getRealPosition();
+                            tpex = ep.x;
+                            tpey = ep.y;
+                        } else {
+                            crashTrace(fmt::format(
+                                "OBJRECT_TYPE_MISMATCH index={} uid={} operation=TargetGroupObjectCast",
+                                autobotIndex, obj->m_uniqueID));
+                        }
+                    }
+                    if (n != 1)
+                        log::info("solver: teleport uid {} target group {} has {} "
+                                  "members (random exit - NOT deterministic)",
+                                  obj->m_uniqueID, tp->m_targetGroupID, n);
+                }
+            } else {
+                crashTrace(fmt::format(
+                    "OBJRECT_TYPE_MISMATCH index={} uid={} id={} type={} operation=TeleportPortalCast",
+                    autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                    static_cast<int>(obj->m_objectType)));
+            }
+        }
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_tp_old}" _ab_tp_pos)
+if(_ab_tp_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver teleport objrect anchor not found")
+endif()
+string(REPLACE "${_ab_tp_old}" "${_ab_tp_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_tw_old [=[
+        if (obj->m_objectID == 1935)
+            tw = static_cast<EffectGameObject*>(obj)->m_timeWarpTimeMod;
+]=])
+set(_ab_tw_new [=[
+        if (obj->m_objectID == 1935) {
+            crashTrace(fmt::format(
+                "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=TimeWarpEffectCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            if (auto* e = geode::cast::typeinfo_cast<EffectGameObject*>(obj))
+                tw = e->m_timeWarpTimeMod;
+            else
+                crashTrace(fmt::format(
+                    "OBJRECT_TYPE_MISMATCH index={} uid={} id={} operation=TimeWarpEffectCast",
+                    autobotIndex, obj->m_uniqueID, obj->m_objectID));
+        }
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_tw_old}" _ab_tw_pos)
+if(_ab_tw_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver time-warp objrect anchor not found")
+endif()
+string(REPLACE "${_ab_tw_old}" "${_ab_tw_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_zoom_old [=[
+        if (obj->m_objectID == 1913) {
+            auto* e = static_cast<EffectGameObject*>(obj);
+            zm = e->m_zoomValue;
+            zdur = e->m_duration;
+            zease = (int)e->m_easingType;
+            zrate = e->m_easingRate;
+        }
+]=])
+set(_ab_zoom_new [=[
+        if (obj->m_objectID == 1913) {
+            crashTrace(fmt::format(
+                "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=ZoomEffectCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            if (auto* e = geode::cast::typeinfo_cast<EffectGameObject*>(obj)) {
+                zm = e->m_zoomValue;
+                zdur = e->m_duration;
+                zease = (int)e->m_easingType;
+                zrate = e->m_easingRate;
+            } else crashTrace(fmt::format(
+                "OBJRECT_TYPE_MISMATCH index={} uid={} id={} operation=ZoomEffectCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID));
+        }
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_zoom_old}" _ab_zoom_pos)
+if(_ab_zoom_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver zoom objrect anchor not found")
+endif()
+string(REPLACE "${_ab_zoom_old}" "${_ab_zoom_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_rot_old [=[
+        if (obj->m_objectID == 2900) {
+            auto* rg = static_cast<RotateGameplayGameObject*>(obj);
+            mvdir = rg->m_moveDirection;
+            gnddir = rg->m_groundDirection;
+            editvel = rg->m_editVelocity ? 1 : 0;
+            ovrvel = rg->m_overrideVelocity ? 1 : 0;
+            vmodx = rg->m_velocityModX;
+            vmody = rg->m_velocityModY;
+        }
+]=])
+set(_ab_rot_new [=[
+        if (obj->m_objectID == 2900) {
+            crashTrace(fmt::format(
+                "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=RotateGameplayCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            if (auto* rg = geode::cast::typeinfo_cast<RotateGameplayGameObject*>(obj)) {
+                mvdir = rg->m_moveDirection;
+                gnddir = rg->m_groundDirection;
+                editvel = rg->m_editVelocity ? 1 : 0;
+                ovrvel = rg->m_overrideVelocity ? 1 : 0;
+                vmodx = rg->m_velocityModX;
+                vmody = rg->m_velocityModY;
+            } else crashTrace(fmt::format(
+                "OBJRECT_TYPE_MISMATCH index={} uid={} id={} operation=RotateGameplayCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID));
+        }
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_rot_old}" _ab_rot_pos)
+if(_ab_rot_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver rotate-gameplay objrect anchor not found")
+endif()
+string(REPLACE "${_ab_rot_old}" "${_ab_rot_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_opts_old [=[
+        if (obj->m_objectID == 2899) {
+            auto* go = static_cast<GameOptionsTrigger*>(obj);
+            optp1 = (int)go->m_disableP1Controls;
+            optp2 = (int)go->m_disableP2Controls;
+        }
+]=])
+set(_ab_opts_new [=[
+        if (obj->m_objectID == 2899) {
+            crashTrace(fmt::format(
+                "OBJRECT_SPECIAL index={} uid={} id={} type={} ptr={} operation=GameOptionsCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            if (auto* go = geode::cast::typeinfo_cast<GameOptionsTrigger*>(obj)) {
+                optp1 = (int)go->m_disableP1Controls;
+                optp2 = (int)go->m_disableP2Controls;
+            } else crashTrace(fmt::format(
+                "OBJRECT_TYPE_MISMATCH index={} uid={} id={} operation=GameOptionsCast",
+                autobotIndex, obj->m_uniqueID, obj->m_objectID));
+        }
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_opts_old}" _ab_opts_pos)
+if(_ab_opts_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver GameOptions objrect anchor not found")
+endif()
+string(REPLACE "${_ab_opts_old}" "${_ab_opts_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_pois_old [=[
+    std::ofstream pf(std::string(DATA_DIR) + "/pois.txt", std::ios::trunc);
+    for (auto& p : g_pois) pf << p.x << "," << p.y << "\n";
+]=])
+set(_ab_pois_new [=[
+    crashTrace("PRE_POIS_DUMP");
+    std::ofstream pf(std::string(DATA_DIR) + "/pois.txt", std::ios::trunc);
+    for (auto& p : g_pois) pf << p.x << "," << p.y << "\n";
+    pf.flush();
+    crashTrace("POST_POIS_DUMP");
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_pois_old}" _ab_pois_pos)
+if(_ab_pois_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver pois dump anchor not found")
+endif()
+string(REPLACE "${_ab_pois_old}" "${_ab_pois_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_objects_old [=[
+    std::ofstream of(std::string(DATA_DIR) + "/objects.txt", std::ios::trunc);
+    for (auto* obj : CCArrayExt<GameObject*>(l->m_objects)) {
+        if (!obj) continue;
+        auto p = obj->getPosition();
+        of << obj->m_objectID << "," << (int)obj->m_objectType
+           << "," << p.x << "," << p.y << "\n";
+    }
+]=])
+set(_ab_objects_new [=[
+    crashTrace("PRE_OBJECTS_DUMP");
+    std::ofstream of(std::string(DATA_DIR) + "/objects.txt", std::ios::trunc);
+    for (auto* obj : CCArrayExt<GameObject*>(l->m_objects)) {
+        if (!obj) continue;
+        auto p = obj->getPosition();
+        of << obj->m_objectID << "," << (int)obj->m_objectType
+           << "," << p.x << "," << p.y << "\n";
+    }
+    of.flush();
+    crashTrace("POST_OBJECTS_DUMP");
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_objects_old}" _ab_objects_pos)
+if(_ab_objects_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver objects dump anchor not found")
+endif()
+string(REPLACE "${_ab_objects_old}" "${_ab_objects_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_objrect_old [=[
+    {
+        std::ofstream rf(std::string(DATA_DIR) + "/objrects.txt", std::ios::trunc);
+        writeObjRects(rf, l);
+    }
+]=])
+set(_ab_objrect_new [=[
+    crashTrace("PRE_OBJRECTS_DUMP");
+    {
+        std::ofstream rf(std::string(DATA_DIR) + "/objrects.txt", std::ios::trunc);
+        writeObjRects(rf, l);
+        rf.flush();
+    }
+    crashTrace("POST_OBJRECTS_DUMP");
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_objrect_old}" _ab_objrect_pos)
+if(_ab_objrect_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver objrect dump anchor not found")
+endif()
+string(REPLACE "${_ab_objrect_old}" "${_ab_objrect_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_obb_begin_old [=[
+    {
+        std::ofstream bf(std::string(DATA_DIR) + "/obb.txt", std::ios::trunc);
+]=])
+set(_ab_obb_begin_new [=[
+    crashTrace("PRE_OBB_DUMP");
+    {
+        std::ofstream bf(std::string(DATA_DIR) + "/obb.txt", std::ios::trunc);
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_obb_begin_old}" _ab_obb_begin_pos)
+if(_ab_obb_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver OBB begin anchor not found")
+endif()
+string(REPLACE "${_ab_obb_begin_old}" "${_ab_obb_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_obb_call_old [=[
+            auto* ob = obj->getOrientedBox();
+            if (!ob) continue;
+]=])
+set(_ab_obb_call_new [=[
+            crashTrace(fmt::format(
+                "OBB_SPECIAL uid={} id={} type={} ptr={} operation=GetOrientedBox",
+                obj->m_uniqueID, obj->m_objectID,
+                static_cast<int>(obj->m_objectType), static_cast<void*>(obj)));
+            auto* ob = obj->getOrientedBox();
+            if (!ob) continue;
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_obb_call_old}" _ab_obb_call_pos)
+if(_ab_obb_call_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver OBB call anchor not found")
+endif()
+string(REPLACE "${_ab_obb_call_old}" "${_ab_obb_call_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_obb_end_old [=[
+        log::info("obb: {} rotated objects", n);
+    }
+    // ---- forceblocks.txt: the force block's own settings ---------------------
+]=])
+set(_ab_obb_end_new [=[
+        log::info("obb: {} rotated objects", n);
+    }
+    crashTrace("POST_OBB_DUMP");
+    // ---- forceblocks.txt: the force block's own settings ---------------------
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_obb_end_old}" _ab_obb_end_pos)
+if(_ab_obb_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver OBB end anchor not found")
+endif()
+string(REPLACE "${_ab_obb_end_old}" "${_ab_obb_end_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_force_begin_old [=[
+    {
+        std::ofstream ff(std::string(DATA_DIR) + "/forceblocks.txt",
+]=])
+set(_ab_force_begin_new [=[
+    crashTrace("PRE_FORCEBLOCKS_DUMP");
+    {
+        std::ofstream ff(std::string(DATA_DIR) + "/forceblocks.txt",
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_force_begin_old}" _ab_force_begin_pos)
+if(_ab_force_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver forceblocks begin anchor not found")
+endif()
+string(REPLACE "${_ab_force_begin_old}" "${_ab_force_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_force_end_old [=[
+        log::info("forceblocks: {} force blocks", n);
+    }
+    // ---- triggers.txt / objgroups.txt: the trigger mapping -------------------
+]=])
+set(_ab_force_end_new [=[
+        log::info("forceblocks: {} force blocks", n);
+    }
+    crashTrace("POST_FORCEBLOCKS_DUMP");
+    // ---- triggers.txt / objgroups.txt: the trigger mapping -------------------
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_force_end_old}" _ab_force_end_pos)
+if(_ab_force_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver forceblocks end anchor not found")
+endif()
+string(REPLACE "${_ab_force_end_old}" "${_ab_force_end_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_trig_begin_old [=[
+    {
+        std::ofstream tf(std::string(DATA_DIR) + "/triggers.txt", std::ios::trunc);
+]=])
+set(_ab_trig_begin_new [=[
+    crashTrace("PRE_TRIGGERS_DUMP");
+    {
+        std::ofstream tf(std::string(DATA_DIR) + "/triggers.txt", std::ios::trunc);
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_trig_begin_old}" _ab_trig_begin_pos)
+if(_ab_trig_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver triggers begin anchor not found")
+endif()
+string(REPLACE "${_ab_trig_begin_old}" "${_ab_trig_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_groups_old [=[
+            if (obj->m_groupCount > 0 && obj->m_groups) {
+                gf << obj->m_uniqueID;
+                const int ng = std::min((int)obj->m_groupCount, 10);
+                for (int i = 0; i < ng; ++i) gf << " " << (int)(*obj->m_groups)[i];
+]=])
+set(_ab_groups_new [=[
+            if (obj->m_groupCount > 0 && obj->m_groups) {
+                gf << obj->m_uniqueID;
+                const int ng = std::min({
+                    static_cast<int>(obj->m_groupCount),
+                    10,
+                    static_cast<int>(obj->m_groups->size())
+                });
+                if (static_cast<int>(obj->m_groupCount) > static_cast<int>(obj->m_groups->size()))
+                    crashTrace(fmt::format(
+                        "GROUP_COUNT_MISMATCH uid={} id={} count={} vectorSize={}",
+                        obj->m_uniqueID, obj->m_objectID,
+                        static_cast<int>(obj->m_groupCount), obj->m_groups->size()));
+                for (int i = 0; i < ng; ++i) gf << " " << (int)(*obj->m_groups)[i];
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_groups_old}" _ab_groups_pos)
+if(_ab_groups_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver groups bounds anchor not found")
+endif()
+string(REPLACE "${_ab_groups_old}" "${_ab_groups_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_trig_end_old [=[
+        log::info("triggers: {} triggers with a target, {} grouped objects",
+                  nTrig, nGrp);
+    }
+    // ---- rotgameplay.txt: the 2.2 trigger queue's inputs ---------------------
+]=])
+set(_ab_trig_end_new [=[
+        log::info("triggers: {} triggers with a target, {} grouped objects",
+                  nTrig, nGrp);
+    }
+    crashTrace("POST_TRIGGERS_DUMP");
+    // ---- rotgameplay.txt: the 2.2 trigger queue's inputs ---------------------
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_trig_end_old}" _ab_trig_end_pos)
+if(_ab_trig_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver triggers end anchor not found")
+endif()
+string(REPLACE "${_ab_trig_end_old}" "${_ab_trig_end_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_rotgame_begin_old [=[
+    {
+        std::ofstream rf(std::string(DATA_DIR) + "/rotgameplay.txt",
+]=])
+set(_ab_rotgame_begin_new [=[
+    crashTrace("PRE_ROTGAMEPLAY_DUMP");
+    {
+        std::ofstream rf(std::string(DATA_DIR) + "/rotgameplay.txt",
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_rotgame_begin_old}" _ab_rotgame_begin_pos)
+if(_ab_rotgame_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver rotgameplay begin anchor not found")
+endif()
+string(REPLACE "${_ab_rotgame_begin_old}" "${_ab_rotgame_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_rotgame_end_old [=[
+        if (n) log::info("rotgameplay: {} rotation-gameplay objects", n);
+    }
+    // ---- levelsettings.txt: the level's own compatibility flags -------------
+]=])
+set(_ab_rotgame_end_new [=[
+        if (n) log::info("rotgameplay: {} rotation-gameplay objects", n);
+    }
+    crashTrace("POST_ROTGAMEPLAY_DUMP");
+    // ---- levelsettings.txt: the level's own compatibility flags -------------
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_rotgame_end_old}" _ab_rotgame_end_pos)
+if(_ab_rotgame_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver rotgameplay end anchor not found")
+endif()
+string(REPLACE "${_ab_rotgame_end_old}" "${_ab_rotgame_end_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_ls_begin_old [=[
+    if (auto* ls = l->m_levelSettings) {
+]=])
+set(_ab_ls_begin_new [=[
+    crashTrace("PRE_LEVELSETTINGS_DUMP");
+    if (auto* ls = l->m_levelSettings) {
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_ls_begin_old}" _ab_ls_begin_pos)
+if(_ab_ls_begin_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver levelsettings begin anchor not found")
+endif()
+string(REPLACE "${_ab_ls_begin_old}" "${_ab_ls_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+set(_ab_end_old [=[
+         log::info("levelsettings: fixRadiusCollision={} platformer={} "
+                   "reverse={}", (int)ls->m_fixRadiusCollision,
+                   (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
+    }
+}
+]=])
+set(_ab_end_new [=[
+         log::info("levelsettings: fixRadiusCollision={} platformer={} "
+                   "reverse={}", (int)ls->m_fixRadiusCollision,
+                   (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
+    }
+    crashTrace("POST_LEVELSETTINGS_DUMP");
+    crashTrace("POST_BUILDPOIS_EXPORTS");
+}
+]=])
+string(FIND "${_autobot_solver_header_text}" "${_ab_end_old}" _ab_end_pos)
+if(_ab_end_pos EQUAL -1)
+    message(FATAL_ERROR "Pinned gdsolver buildPois end anchor not found")
+endif()
+string(REPLACE "${_ab_end_old}" "${_ab_end_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
+
+file(WRITE "${_autobot_solver_header}" "${_autobot_solver_header_text}")
+
 file(GLOB_RECURSE AUTOBOT_SOLVER_SOURCES CONFIGURE_DEPENDS
     "${AUTOBOT_GDSOLVER_ROOT}/src/*.cpp"
 )
