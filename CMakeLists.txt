@@ -1885,16 +1885,16 @@ endif()
 string(REPLACE "${_ab_ls_begin_old}" "${_ab_ls_begin_new}" _autobot_solver_header_text "${_autobot_solver_header_text}")
 
 set(_ab_end_old [=[
-         log::info("levelsettings: fixRadiusCollision={} platformer={} "
-                   "reverse={}", (int)ls->m_fixRadiusCollision,
-                   (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
+        log::info("levelsettings: fixRadiusCollision={} platformer={} "
+                  "reverse={}", (int)ls->m_fixRadiusCollision,
+                  (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
     }
 }
 ]=])
 set(_ab_end_new [=[
-         log::info("levelsettings: fixRadiusCollision={} platformer={} "
-                   "reverse={}", (int)ls->m_fixRadiusCollision,
-                   (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
+        log::info("levelsettings: fixRadiusCollision={} platformer={} "
+                  "reverse={}", (int)ls->m_fixRadiusCollision,
+                  (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);
     }
     crashTrace("POST_LEVELSETTINGS_DUMP");
     crashTrace("POST_BUILDPOIS_EXPORTS");
